@@ -1,0 +1,11 @@
+[project]
+name = "caibaoagent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.135.2",
+    "openai>=2.30.0",
+    "pypdf>=6.9.2",
+    "python-dotenv>=1.2.2",
+    "uvicorn>=0.42.0",
+]
