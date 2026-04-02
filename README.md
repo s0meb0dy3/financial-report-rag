@@ -26,7 +26,7 @@ uv sync
 OPENROUTER_API_KEY=your-openrouter-api-key
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 EMBEDDING_MODEL=nvidia/llama-nemotron-embed-vl-1b-v2:free
-CHAT_MODEL=openai/gpt-5.4-nano
+CHAT_MODEL=qwen/qwen3.5-9b
 ```
 
 ## 使用方式
@@ -55,8 +55,16 @@ uv run python agent.py "贵州茅台2024年的营业总收入是多少？"
 uv run python agent.py --help
 ```
 
+4. 用 [`eval.py`](/Users/peteryao/projects/CaibaoAgent/eval.py) 跑固定问题集评测
+
+```bash
+uv run python eval.py
+```
+
+评测问题集在 [`data/eval/questions.json`](/Users/peteryao/projects/CaibaoAgent/data/eval/questions.json)，结果默认写到 `data/eval/results/latest.json`。
+
 ## 测试
 
 ```bash
-python3 -m unittest tests/test_agent.py tests/test_retriever.py tests/test_ingest.py -v
+python3 -m unittest tests/test_agent.py tests/test_retriever.py tests/test_ingest.py tests/test_eval.py -v
 ```

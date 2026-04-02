@@ -7,7 +7,7 @@ from ingest import chunk_page_text, ingest_pdf
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PDF_PATH = PROJECT_ROOT / "茅台24年年度报告.pdf"
+PDF_PATH = PROJECT_ROOT / "茅台2024年年度报告完整版.pdf"
 
 
 class IngestPdfTests(unittest.TestCase):

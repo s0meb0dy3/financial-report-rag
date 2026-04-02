@@ -38,7 +38,7 @@
 
 ### 已完成
 
-* 已接入财报 PDF [`茅台24年年度报告.pdf`](/Users/peteryao/projects/CaibaoAgent/茅台24年年度报告.pdf)
+* 已接入财报 PDF [`茅台2024年年度报告完整版.pdf`](/Users/peteryao/projects/CaibaoAgent/茅台2024年年度报告完整版.pdf)
 * 已完成 [`ingest.py`](/Users/peteryao/projects/CaibaoAgent/ingest.py)
   * PDF 提取文本
   * 小块切分

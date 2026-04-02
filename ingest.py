@@ -69,7 +69,7 @@ def ingest_pdf(pdf_path: Path, output_path: Path) -> list[dict[str, Any]]:
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parent
-    pdf_path = project_root / "茅台24年年度报告.pdf"
+    pdf_path = project_root / "茅台2024年年度报告完整版.pdf"
     output_path = project_root / "data" / "processed" / "chunks.json"
     ingest_pdf(pdf_path, output_path)
     print(f"Wrote chunks to {output_path}")

@@ -8,6 +8,9 @@ from agent import Agent, DEFAULT_CHAT_MODEL, build_arg_parser, main
 
 
 class AgentTests(unittest.TestCase):
+    def test_default_chat_model_uses_qwen_3_5_9b(self) -> None:
+        self.assertEqual(DEFAULT_CHAT_MODEL, "qwen/qwen3.5-9b")
+
     def test_build_arg_parser_reads_question_and_options(self) -> None:
         parser = build_arg_parser()
 

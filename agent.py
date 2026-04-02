@@ -11,7 +11,7 @@ from retriever import DEFAULT_OPENROUTER_BASE_URL, Retriever
 
 load_dotenv()
 
-DEFAULT_CHAT_MODEL = "openai/gpt-5.4-nano"
+DEFAULT_CHAT_MODEL = "qwen/qwen3.5-9b"
 
 
 class Agent:
