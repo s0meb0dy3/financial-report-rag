@@ -98,6 +98,19 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     average_score = (
         sum(result["judge"]["score"] for result in results) / total if total else 0.0
     )
+    failed_questions = [
+        {
+            "id": result["id"],
+            "question": result["question"],
+            "answer": result["answer"],
+            "expected_answer": result["expected_answer"],
+            "citations": result["citations"],
+            "reason": result["judge"]["reason"],
+            "score": result["judge"]["score"],
+        }
+        for result in results
+        if not result["judge"]["pass"]
+    ]
 
     by_type: dict[str, dict[str, Any]] = {}
     for result in results:
@@ -121,6 +134,8 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "total": total,
         "passed": passed,
         "average_score": round(average_score, 4),
+        "overall_score": round(average_score, 4),
+        "failed_questions": failed_questions,
         "by_type": by_type,
     }
 
@@ -186,7 +201,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     print(f"Pass rate: {summary['passed']}/{summary['total']}")
+    print(f"Overall score: {summary['overall_score']:.4f}")
     print(f"Average score: {summary['average_score']:.4f}")
+    if summary["failed_questions"]:
+        print("Failed questions:")
+        for failed in summary["failed_questions"]:
+            print(f"- {failed['id']}: {failed['question']}")
+            print(f"  answer: {failed['answer']}")
+            print(f"  expected: {failed['expected_answer']}")
+            print(f"  citations: {failed['citations']}")
+            print(f"  reason: {failed['reason']}")
     print(f"Saved results to {output_path}")
     return 0
 

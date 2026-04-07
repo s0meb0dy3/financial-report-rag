@@ -11,7 +11,7 @@ from retriever import DEFAULT_OPENROUTER_BASE_URL, Retriever
 
 load_dotenv()
 
-DEFAULT_CHAT_MODEL = "qwen/qwen3.5-9b"
+DEFAULT_CHAT_MODEL = "qwen/qwen3.6-plus:free"
 
 
 class Agent:

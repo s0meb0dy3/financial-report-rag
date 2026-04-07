@@ -122,9 +122,74 @@ class EvalTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertIn("Pass rate: 1/1", stdout.getvalue())
+        self.assertIn("Overall score: 1.0000", stdout.getvalue())
         self.assertEqual(saved["summary"]["total"], 1)
         self.assertEqual(saved["summary"]["passed"], 1)
         self.assertEqual(saved["results"][0]["judge"]["score"], 1.0)
+        self.assertEqual(saved["summary"]["failed_questions"], [])
+
+    def test_main_prints_failed_question_details(self) -> None:
+        questions = [
+            {
+                "id": "q020",
+                "question": "公司在年报中提到的主要风险有哪些？",
+                "expected_answer": "宏观经济风险、安全风险、舆情风险、环境保护风险",
+                "aliases": [],
+                "expected_pages": [22],
+                "type": "risk",
+            }
+        ]
+
+        ask_result = {
+            "question": "公司在年报中提到的主要风险有哪些？",
+            "answer": "信用风险、流动风险、汇率风险和利率风险[122]",
+            "citations": [2, 122],
+        }
+        judge_response = MagicMock()
+        judge_response.choices = [MagicMock()]
+        judge_response.choices[0].message.content = (
+            '{"pass": false, "score": 0.0, "reason": "回答的是财务风险，不是经营风险"}'
+        )
+
+        mock_agent = MagicMock()
+        mock_agent.ask.return_value = ask_result
+        mock_agent.chat_model = "qwen/qwen3.6-plus-preview:free"
+        mock_agent.client.chat.completions.create.return_value = judge_response
+
+        mock_context = MagicMock()
+        mock_context.__enter__.return_value = mock_agent
+        mock_context.__exit__.return_value = None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            questions_path = Path(temp_dir) / "questions.json"
+            output_path = Path(temp_dir) / "results.json"
+            questions_path.write_text(json.dumps(questions, ensure_ascii=False), encoding="utf-8")
+
+            with patch("eval.Agent.from_env", return_value=mock_context):
+                with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                    exit_code = main(
+                        [
+                            "--questions-path",
+                            str(questions_path),
+                            "--output-path",
+                            str(output_path),
+                            "--embeddings-path",
+                            "data/processed/embeddings.json",
+                        ]
+                    )
+
+            saved = json.loads(output_path.read_text(encoding="utf-8"))
+
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Overall score: 0.0000", output)
+        self.assertIn("Failed questions:", output)
+        self.assertIn("q020", output)
+        self.assertIn("信用风险、流动风险、汇率风险和利率风险", output)
+        self.assertIn("宏观经济风险、安全风险、舆情风险、环境保护风险", output)
+        self.assertIn("回答的是财务风险，不是经营风险", output)
+        self.assertEqual(len(saved["summary"]["failed_questions"]), 1)
+        self.assertEqual(saved["summary"]["failed_questions"][0]["id"], "q020")
 
 
 if __name__ == "__main__":
