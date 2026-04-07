@@ -1,7 +1,5 @@
 import os
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from retriever import DEFAULT_EMBEDDING_MODEL, DEFAULT_OPENROUTER_BASE_URL, Retriever
@@ -32,23 +30,6 @@ class RetrieverTests(unittest.TestCase):
         self.assertEqual(retriever.base_url, "https://example.com/api/v1")
         self.assertEqual(retriever.embedding_model, "custom-model")
 
-    def test_cosine_similarity_prefers_same_direction(self) -> None:
-        self.assertGreater(Retriever.cosine_similarity([1.0, 0.0], [1.0, 0.0]), 0.99)
-        self.assertLess(Retriever.cosine_similarity([1.0, 0.0], [0.0, 1.0]), 0.01)
-
-    def test_rank_chunks_by_similarity_returns_top_match_first(self) -> None:
-        chunks = [
-            {"chunk_id": "a", "page": 1, "text": "收入增长", "embedding": [1.0, 0.0]},
-            {"chunk_id": "b", "page": 2, "text": "董事会信息", "embedding": [0.0, 1.0]},
-        ]
-        retriever = Retriever(api_key="test-key")
-
-        results = retriever.rank_by_similarity([1.0, 0.0], chunks, top_k=1)
-
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["chunk_id"], "a")
-        self.assertIn("score", results[0])
-
     def test_extract_embeddings_reads_openrouter_shape(self) -> None:
         response_json = {
             "object": "list",
@@ -63,17 +44,48 @@ class RetrieverTests(unittest.TestCase):
 
         self.assertEqual(embeddings, [[0.1, 0.2], [0.3, 0.4]])
 
-    def test_save_and_load_embeddings_round_trip(self) -> None:
-        retriever = Retriever(api_key="test-key")
-        embedded_chunks = [{"chunk_id": "a", "page": 1, "text": "收入增长", "embedding": [1.0, 0.0]}]
+    def test_index_chunks_embeds_text_and_upserts_to_vector_store(self) -> None:
+        vector_store = MagicMock()
+        retriever = Retriever(api_key="test-key", vector_store=vector_store)
+        chunks = [
+            {
+                "chunk_id": "doc-a-page-1-chunk-1",
+                "doc_id": "doc-a",
+                "doc_name": "doc-a.pdf",
+                "source_path": "/tmp/doc-a.pdf",
+                "page": 1,
+                "text": "收入增长",
+            }
+        ]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "embeddings.json"
-            retriever.save_embeddings(embedded_chunks, path)
+        with patch.object(retriever, "embed", return_value=[[1.0, 0.0]]) as mock_embed:
+            embedded = retriever.index_chunks(chunks)
 
-            loaded = retriever.load_embeddings(path)
+        mock_embed.assert_called_once_with(["收入增长"])
+        vector_store.upsert_documents.assert_called_once()
+        self.assertEqual(embedded[0]["embedding"], [1.0, 0.0])
 
-        self.assertEqual(loaded, embedded_chunks)
+    def test_search_embeds_query_and_delegates_to_vector_store(self) -> None:
+        vector_store = MagicMock()
+        vector_store.search.return_value = [
+            {
+                "chunk_id": "doc-a-page-1-chunk-1",
+                "doc_id": "doc-a",
+                "doc_name": "doc-a.pdf",
+                "source_path": "/tmp/doc-a.pdf",
+                "page": 1,
+                "text": "收入增长",
+                "score": 0.91,
+            }
+        ]
+        retriever = Retriever(api_key="test-key", vector_store=vector_store)
+
+        with patch.object(retriever, "embed", return_value=[[1.0, 0.0]]) as mock_embed:
+            results = retriever.search("营业总收入是多少？", top_k=2, filters={"doc_id": "doc-a"})
+
+        mock_embed.assert_called_once_with(["营业总收入是多少？"])
+        vector_store.search.assert_called_once_with([1.0, 0.0], top_k=2, filters={"doc_id": "doc-a"})
+        self.assertEqual(results[0]["doc_name"], "doc-a.pdf")
 
     def test_close_shuts_down_existing_client(self) -> None:
         retriever = Retriever(api_key="test-key")
@@ -84,6 +96,14 @@ class RetrieverTests(unittest.TestCase):
 
         client.close.assert_called_once()
         self.assertIsNone(retriever._client)
+
+    def test_close_also_closes_owned_vector_store(self) -> None:
+        vector_store = MagicMock()
+        retriever = Retriever(api_key="test-key", vector_store=vector_store)
+
+        retriever.close()
+
+        vector_store.close.assert_called_once()
 
 
 if __name__ == "__main__":

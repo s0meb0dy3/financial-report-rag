@@ -46,7 +46,10 @@ class EvalTests(unittest.TestCase):
             },
             answer_result={
                 "answer": "公司的外文名称是 Kweichow Moutai Co.,Ltd. [4]",
-                "citations": [4, 74, 122],
+                "citations": [
+                    {"doc_id": "moutai", "doc_name": "茅台2024年年度报告完整版.pdf", "page": 4},
+                    {"doc_id": "moutai", "doc_name": "茅台2024年年度报告完整版.pdf", "page": 74},
+                ],
             },
         )
 
@@ -83,7 +86,10 @@ class EvalTests(unittest.TestCase):
         ask_result = {
             "question": "公司的外文名称是什么？",
             "answer": "公司的外文名称是 Kweichow Moutai Co.,Ltd. [4]",
-            "citations": [4, 74, 122],
+            "citations": [
+                {"doc_id": "moutai", "doc_name": "茅台2024年年度报告完整版.pdf", "page": 4},
+                {"doc_id": "moutai", "doc_name": "茅台2024年年度报告完整版.pdf", "page": 74},
+            ],
         }
         judge_response = MagicMock()
         judge_response.choices = [MagicMock()]
@@ -113,8 +119,6 @@ class EvalTests(unittest.TestCase):
                             str(questions_path),
                             "--output-path",
                             str(output_path),
-                            "--embeddings-path",
-                            "data/processed/embeddings.json",
                         ]
                     )
 
@@ -143,7 +147,10 @@ class EvalTests(unittest.TestCase):
         ask_result = {
             "question": "公司在年报中提到的主要风险有哪些？",
             "answer": "信用风险、流动风险、汇率风险和利率风险[122]",
-            "citations": [2, 122],
+            "citations": [
+                {"doc_id": "moutai", "doc_name": "茅台2024年年度报告完整版.pdf", "page": 2},
+                {"doc_id": "moutai", "doc_name": "茅台2024年年度报告完整版.pdf", "page": 122},
+            ],
         }
         judge_response = MagicMock()
         judge_response.choices = [MagicMock()]
@@ -173,8 +180,6 @@ class EvalTests(unittest.TestCase):
                             str(questions_path),
                             "--output-path",
                             str(output_path),
-                            "--embeddings-path",
-                            "data/processed/embeddings.json",
                         ]
                     )
 

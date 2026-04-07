@@ -54,13 +54,15 @@ class Agent:
     def build_user_message(question: str, chunks: list[dict[str, Any]]) -> str:
         context_parts = []
         for chunk in chunks:
-            context_parts.append(f"[Page {chunk['page']}]\n{chunk['text']}")
+            context_parts.append(
+                f"[Doc: {chunk.get('doc_name', 'unknown')} | Page: {chunk['page']}]\n{chunk['text']}"
+            )
 
         context = "\n\n".join(context_parts)
         return (
             "请严格根据下面提供的资料回答问题。\n"
             "如果资料不足以支持答案，就明确回答“我不知道”。\n"
-            "回答尽量简洁，并在关键结论后标注页码，例如 [2]。\n\n"
+            "回答尽量简洁，并在关键结论后标注文档名和页码。\n\n"
             f"问题：{question}\n\n"
             f"资料：\n{context}"
         )
@@ -76,6 +78,23 @@ class Agent:
         if not content:
             raise ValueError("No chat completion content received")
         return content.strip()
+
+    @staticmethod
+    def build_citations(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen = set()
+        citations = []
+        for chunk in chunks:
+            citation = {
+                "doc_id": chunk.get("doc_id", ""),
+                "doc_name": chunk.get("doc_name", ""),
+                "page": chunk["page"],
+            }
+            key = (citation["doc_id"], citation["doc_name"], citation["page"])
+            if key in seen:
+                continue
+            seen.add(key)
+            citations.append(citation)
+        return citations
 
     def chat(self, question: str, chunks: list[dict[str, Any]]) -> str:
         user_message = self.build_user_message(question, chunks)
@@ -94,12 +113,14 @@ class Agent:
     def ask(
         self,
         question: str,
-        embeddings_path: Union[str, Path],
+        embeddings_path: Union[str, Path, None] = None,
         top_k: int = 3,
+        filters: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        chunks = self.retriever.search(question, Path(embeddings_path), top_k=top_k)
+        _ = embeddings_path
+        chunks = self.retriever.search(question, top_k=top_k, filters=filters)
         answer = self.chat(question, chunks)
-        citations = sorted({chunk["page"] for chunk in chunks})
+        citations = self.build_citations(chunks)
         return {
             "question": question,
             "answer": answer,
@@ -123,12 +144,12 @@ class Agent:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Ask questions about the Moutai annual report.")
+    parser = argparse.ArgumentParser(description="Ask questions about indexed financial reports.")
     parser.add_argument("question", help="The question to ask")
     parser.add_argument(
         "--embeddings-path",
         default="data/processed/embeddings.json",
-        help="Path to the embeddings JSON file",
+        help="Deprecated compatibility option. ChromaDB is used instead.",
     )
     parser.add_argument(
         "--top-k",
@@ -136,16 +157,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=3,
         help="How many chunks to retrieve",
     )
+    parser.add_argument(
+        "--doc-id",
+        help="Optional document filter for retrieval",
+    )
     return parser
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    project_root = Path(__file__).resolve().parent
-    embeddings_path = project_root / args.embeddings_path
+
+    filters = {"doc_id": args.doc_id} if args.doc_id else None
 
     with Agent.from_env() as agent:
-        result = agent.ask(args.question, embeddings_path, top_k=args.top_k)
+        result = agent.ask(
+            args.question,
+            top_k=args.top_k,
+            filters=filters,
+        )
 
     print(result["answer"])
     print(f"Citations: {result['citations']}")

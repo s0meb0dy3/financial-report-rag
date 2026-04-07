@@ -68,10 +68,9 @@ def parse_judge_result(content: str) -> dict[str, Any]:
 def evaluate_question(
     agent: Agent,
     question: dict[str, Any],
-    embeddings_path: Path,
     top_k: int,
 ) -> dict[str, Any]:
-    answer_result = agent.ask(question["question"], embeddings_path, top_k=top_k)
+    answer_result = agent.ask(question["question"], top_k=top_k)
     judge_response = agent.client.chat.completions.create(
         model=agent.chat_model,
         messages=build_judge_messages(question, answer_result),
@@ -178,14 +177,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     project_root = Path(__file__).resolve().parent
     questions_path = resolve_path(project_root, args.questions_path)
     output_path = resolve_path(project_root, args.output_path)
-    embeddings_path = resolve_path(project_root, args.embeddings_path)
-
     questions = load_questions(questions_path)
     results = []
 
     with Agent.from_env() as agent:
         for question in questions:
-            result = evaluate_question(agent, question, embeddings_path, top_k=args.top_k)
+            result = evaluate_question(agent, question, top_k=args.top_k)
             results.append(result)
             judge = result["judge"]
             status = "PASS" if judge["pass"] else "FAIL"

@@ -247,5 +247,73 @@
       22
     ],
     "type": "risk"
+  },
+  {
+    "id": "q021",
+    "question": "中国长江电力股份有限公司的外文名称是什么？",
+    "expected_answer": "China Yangtze Power Co.,Ltd.",
+    "aliases": [
+      "China Yangtze Power Co., Ltd."
+    ],
+    "expected_pages": [
+      4
+    ],
+    "type": "fact"
+  },
+  {
+    "id": "q022",
+    "question": "长江电力2024年报中的法定代表人是谁？",
+    "expected_answer": "刘伟平",
+    "aliases": [],
+    "expected_pages": [
+      4
+    ],
+    "type": "fact"
+  },
+  {
+    "id": "q023",
+    "question": "长江电力的注册地址是什么？",
+    "expected_answer": "北京市海淀区玉渊潭南路1号B座",
+    "aliases": [],
+    "expected_pages": [
+      4
+    ],
+    "type": "fact"
+  },
+  {
+    "id": "q024",
+    "question": "长江电力的公司办公地址是什么？",
+    "expected_answer": "湖北省武汉市江岸区三阳路88号",
+    "aliases": [],
+    "expected_pages": [
+      5
+    ],
+    "type": "fact"
+  },
+  {
+    "id": "q025",
+    "question": "长江电力2024年的营业收入是多少？",
+    "expected_answer": "84,491,870,566.52元",
+    "aliases": [
+      "84491870566.52元",
+      "844.92亿元"
+    ],
+    "expected_pages": [
+      5
+    ],
+    "type": "financial"
+  },
+  {
+    "id": "q026",
+    "question": "长江电力2024年基本每股收益是多少？",
+    "expected_answer": "1.3281元/股",
+    "aliases": [
+      "1.3281元／股",
+      "1.3281"
+    ],
+    "expected_pages": [
+      6
+    ],
+    "type": "financial"
   }
 ]

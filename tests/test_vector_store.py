@@ -1,0 +1,83 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from vector_store import ChromaVectorStore
+
+
+class ChromaVectorStoreTests(unittest.TestCase):
+    def test_upsert_and_search_persist_across_instances(self) -> None:
+        chunks = [
+            {
+                "chunk_id": "doc-a-page-1-chunk-1",
+                "doc_id": "doc-a",
+                "doc_name": "doc-a.pdf",
+                "source_path": "/tmp/doc-a.pdf",
+                "page": 1,
+                "text": "营业总收入 1,741.44 亿元。",
+                "embedding": [1.0, 0.0],
+            },
+            {
+                "chunk_id": "doc-b-page-1-chunk-1",
+                "doc_id": "doc-b",
+                "doc_name": "doc-b.pdf",
+                "source_path": "/tmp/doc-b.pdf",
+                "page": 1,
+                "text": "净利润 862.28 亿元。",
+                "embedding": [0.0, 1.0],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            persist_dir = Path(temp_dir) / "chroma"
+
+            store = ChromaVectorStore(persist_dir=persist_dir, collection_name="test")
+            store.upsert_documents(chunks)
+            store.close()
+
+            reopened = ChromaVectorStore(persist_dir=persist_dir, collection_name="test")
+            results = reopened.search([1.0, 0.0], top_k=1)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["chunk_id"], "doc-a-page-1-chunk-1")
+        self.assertEqual(results[0]["doc_name"], "doc-a.pdf")
+        self.assertEqual(results[0]["page"], 1)
+        self.assertIn("score", results[0])
+
+    def test_search_supports_metadata_filters(self) -> None:
+        chunks = [
+            {
+                "chunk_id": "doc-a-page-1-chunk-1",
+                "doc_id": "doc-a",
+                "doc_name": "doc-a.pdf",
+                "source_path": "/tmp/doc-a.pdf",
+                "page": 1,
+                "text": "营业总收入 1,741.44 亿元。",
+                "embedding": [1.0, 0.0],
+            },
+            {
+                "chunk_id": "doc-b-page-1-chunk-1",
+                "doc_id": "doc-b",
+                "doc_name": "doc-b.pdf",
+                "source_path": "/tmp/doc-b.pdf",
+                "page": 1,
+                "text": "营业总收入 99 亿元。",
+                "embedding": [1.0, 0.0],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ChromaVectorStore(
+                persist_dir=Path(temp_dir) / "chroma",
+                collection_name="test",
+            )
+            store.upsert_documents(chunks)
+
+            results = store.search([1.0, 0.0], top_k=3, filters={"doc_id": "doc-b"})
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["doc_id"], "doc-b")
+
+
+if __name__ == "__main__":
+    unittest.main()

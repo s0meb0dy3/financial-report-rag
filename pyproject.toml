@@ -3,7 +3,9 @@ name = "caibaoagent"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "chromadb>=1.5.6",
     "fastapi>=0.135.2",
+    "httpx>=0.28.1",
     "openai>=2.30.0",
     "pypdf>=6.9.2",
     "python-dotenv>=1.2.2",
