@@ -1,8 +1,15 @@
+import json
 import os
 import unittest
 from unittest.mock import MagicMock, patch
 
-from retriever import DEFAULT_EMBEDDING_MODEL, DEFAULT_OPENROUTER_BASE_URL, Retriever
+from retriever import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_OPENROUTER_BASE_URL,
+    MultiQueryRetriever,
+    QueryRewriter,
+    Retriever,
+)
 
 
 class RetrieverTests(unittest.TestCase):
@@ -86,6 +93,101 @@ class RetrieverTests(unittest.TestCase):
         mock_embed.assert_called_once_with(["营业总收入是多少？"])
         vector_store.search.assert_called_once_with([1.0, 0.0], top_k=2, filters={"doc_id": "doc-a"})
         self.assertEqual(results[0]["doc_name"], "doc-a.pdf")
+
+    def test_query_rewriter_returns_original_and_rewritten_queries(self) -> None:
+        client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = json.dumps(
+            {
+                "queries": [
+                    "贵州茅台 2024 年 营业总收入",
+                    "茅台年报 营业总收入",
+                    "贵州茅台 2024 年 营业总收入",
+                ]
+            },
+            ensure_ascii=False,
+        )
+        client.chat.completions.create.return_value = response
+
+        rewriter = QueryRewriter(
+            api_key="test-key",
+            chat_model="test-chat-model",
+            client=client,
+        )
+
+        queries = rewriter.rewrite(
+            "它的营收是多少？",
+            history_messages=[
+                {"role": "user", "content": "贵州茅台 2024 年怎么样？"},
+                {"role": "assistant", "content": "表现不错。"},
+            ],
+        )
+
+        self.assertEqual(
+            queries,
+            [
+                "它的营收是多少？",
+                "贵州茅台 2024 年 营业总收入",
+                "茅台年报 营业总收入",
+            ],
+        )
+        client.chat.completions.create.assert_called_once()
+        request_kwargs = client.chat.completions.create.call_args.kwargs
+        request_messages = request_kwargs["messages"]
+        self.assertIn("贵州茅台 2024 年怎么样？", request_messages[1]["content"])
+        self.assertEqual(request_kwargs["response_format"], {"type": "json_object"})
+
+    def test_query_rewriter_falls_back_to_original_query_on_invalid_response(self) -> None:
+        client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = "not-json"
+        client.chat.completions.create.return_value = response
+
+        rewriter = QueryRewriter(
+            api_key="test-key",
+            chat_model="test-chat-model",
+            client=client,
+        )
+
+        queries = rewriter.rewrite("营业总收入是多少？")
+
+        self.assertEqual(queries, ["营业总收入是多少？"])
+
+    def test_multi_query_retriever_merges_deduplicates_and_sorts_results(self) -> None:
+        base_retriever = MagicMock()
+        base_retriever.search.side_effect = [
+            [
+                {"chunk_id": "a", "doc_id": "doc-a", "doc_name": "a.pdf", "page": 1, "text": "收入", "score": 0.82},
+                {"chunk_id": "b", "doc_id": "doc-b", "doc_name": "b.pdf", "page": 2, "text": "利润", "score": 0.76},
+            ],
+            [
+                {"chunk_id": "a", "doc_id": "doc-a", "doc_name": "a.pdf", "page": 1, "text": "收入", "score": 0.91},
+                {"chunk_id": "c", "doc_id": "doc-c", "doc_name": "c.pdf", "page": 3, "text": "现金流", "score": 0.88},
+            ],
+            [
+                {"chunk_id": "d", "doc_id": "doc-d", "doc_name": "d.pdf", "page": 4, "text": "费用", "score": 0.7},
+            ],
+        ]
+        query_rewriter = MagicMock()
+        query_rewriter.rewrite.return_value = ["原始问题", "改写一", "改写二"]
+        multi_retriever = MultiQueryRetriever(base_retriever=base_retriever, query_rewriter=query_rewriter)
+
+        results = multi_retriever.search(
+            "原始问题",
+            top_k=3,
+            filters={"doc_id": "doc-a"},
+            history_messages=[{"role": "user", "content": "上一轮问题"}],
+        )
+
+        self.assertEqual([result["chunk_id"] for result in results], ["a", "c", "b"])
+        self.assertEqual(results[0]["score"], 0.91)
+        query_rewriter.rewrite.assert_called_once_with("原始问题", history_messages=[{"role": "user", "content": "上一轮问题"}])
+        self.assertEqual(base_retriever.search.call_count, 3)
+        for call in base_retriever.search.call_args_list:
+            self.assertEqual(call.kwargs["filters"], {"doc_id": "doc-a"})
+            self.assertEqual(call.kwargs["top_k"], 3)
 
     def test_close_shuts_down_existing_client(self) -> None:
         retriever = Retriever(api_key="test-key")

@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 import httpx
 from dotenv import load_dotenv
+from openai import OpenAI
 
 from vector_store import ChromaVectorStore, VectorStore
 
@@ -14,6 +15,7 @@ load_dotenv()
 
 DEFAULT_EMBEDDING_MODEL = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_QUERY_REWRITE_MODEL = "qwen/qwen3.6-plus:free"
 
 
 class Retriever:
@@ -114,6 +116,176 @@ class Retriever:
 
     def __exit__(self, *_: Any) -> None:
         self.close()
+
+
+class QueryRewriter:
+    """将原始问题改写为更适合检索的多个查询"""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: str = DEFAULT_OPENROUTER_BASE_URL,
+        chat_model: Optional[str] = None,
+        max_rewrites: int = 2,
+        client: Optional[OpenAI] = None,
+    ):
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        if not self.api_key:
+            raise ValueError("OPENROUTER_API_KEY is not set")
+        self.base_url = base_url
+        self.chat_model = chat_model or os.environ.get("CHAT_MODEL", DEFAULT_QUERY_REWRITE_MODEL)
+        self.max_rewrites = max_rewrites
+        self._client = client
+        self._owns_client = client is None
+
+    @property
+    def client(self) -> OpenAI:
+        if self._client is None:
+            self._client = OpenAI(
+                base_url=self.base_url,
+                api_key=self.api_key,
+            )
+        return self._client
+
+    @staticmethod
+    def _extract_content(response: Any) -> str:
+        choices = getattr(response, "choices", [])
+        if not choices:
+            return ""
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", "")
+        return content.strip() if isinstance(content, str) else ""
+
+    @staticmethod
+    def _parse_queries(content: str) -> list[str]:
+        if not content:
+            return []
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return []
+
+        if isinstance(payload, dict):
+            items = payload.get("queries", [])
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            return []
+
+        return [item.strip() for item in items if isinstance(item, str) and item.strip()]
+
+    @staticmethod
+    def _format_history(history_messages: Optional[list[dict[str, str]]]) -> str:
+        if not history_messages:
+            return "无"
+        return "\n".join(
+            f"{message['role']}: {message['content']}"
+            for message in history_messages
+            if message.get("content")
+        )
+
+    def rewrite(
+        self,
+        question: str,
+        history_messages: Optional[list[dict[str, str]]] = None,
+    ) -> list[str]:
+        queries = [question.strip()]
+        if not queries[0]:
+            return []
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.chat_model,
+                response_format={"type": "json_object"},
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是财报检索查询改写器。"
+                            "请基于用户问题和最近对话历史，生成最多 2 条适合向量检索的查询改写。"
+                            "要求补全公司名、年份、指标名和指代信息；不要回答问题；必须只返回一个 JSON 对象。"
+                            '输出 schema 固定为 {"queries":["...","..."]}。'
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"当前问题：{question}\n"
+                            f"最近对话：\n{self._format_history(history_messages)}\n"
+                            "请按固定 schema 输出最多 2 条检索查询改写。"
+                        ),
+                    },
+                ],
+            )
+            rewritten = self._parse_queries(self._extract_content(response))
+        except Exception:
+            rewritten = []
+
+        seen = {queries[0]}
+        for item in rewritten:
+            if item in seen:
+                continue
+            queries.append(item)
+            seen.add(item)
+            if len(queries) >= self.max_rewrites + 1:
+                break
+        return queries
+
+    def close(self) -> None:
+        if self._owns_client and self._client is not None:
+            self._client.close()
+            self._client = None
+
+
+class MultiQueryRetriever:
+    """用多条改写查询做召回，再合并排序结果"""
+
+    def __init__(
+        self,
+        base_retriever: Retriever,
+        query_rewriter: QueryRewriter,
+    ):
+        self.base_retriever = base_retriever
+        self.query_rewriter = query_rewriter
+
+    def search_with_queries(
+        self,
+        query: str,
+        top_k: int = 3,
+        filters: Optional[dict[str, Any]] = None,
+        history_messages: Optional[list[dict[str, str]]] = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        queries = self.query_rewriter.rewrite(query, history_messages=history_messages)
+        merged: dict[str, dict[str, Any]] = {}
+
+        for rewritten_query in queries:
+            results = self.base_retriever.search(rewritten_query, top_k=top_k, filters=filters)
+            for result in results:
+                chunk_id = result["chunk_id"]
+                current = merged.get(chunk_id)
+                if current is None or result.get("score", 0.0) > current.get("score", 0.0):
+                    merged[chunk_id] = result
+
+        ranked = sorted(merged.values(), key=lambda item: item.get("score", 0.0), reverse=True)
+        return ranked[:top_k], queries
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 3,
+        filters: Optional[dict[str, Any]] = None,
+        history_messages: Optional[list[dict[str, str]]] = None,
+    ) -> list[dict[str, Any]]:
+        results, _ = self.search_with_queries(
+            query,
+            top_k=top_k,
+            filters=filters,
+            history_messages=history_messages,
+        )
+        return results
+
+    def close(self) -> None:
+        self.query_rewriter.close()
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

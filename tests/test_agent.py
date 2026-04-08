@@ -55,7 +55,7 @@ class AgentTests(unittest.TestCase):
 
         self.assertEqual(answer, "贵州茅台 2024 年营业总收入为 1,741.44 亿元。[2]")
 
-    def test_ask_uses_retriever_and_returns_citations(self) -> None:
+    def test_ask_uses_multi_query_retriever_and_returns_retrieval_queries(self) -> None:
         mock_retriever = MagicMock()
         mock_retriever.search.return_value = [
             {
@@ -81,8 +81,18 @@ class AgentTests(unittest.TestCase):
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "贵州茅台 2024 年营业总收入为 1,741.44 亿元。[2]"
         mock_client.chat.completions.create.return_value = mock_response
+        mock_multi_query_retriever = MagicMock()
+        mock_multi_query_retriever.search_with_queries.return_value = (
+            mock_retriever.search.return_value,
+            ["营业总收入是多少？", "贵州茅台 营业总收入", "贵州茅台 2024 年 营业总收入"],
+        )
 
-        agent = Agent(api_key="test-key", retriever=mock_retriever, client=mock_client)
+        agent = Agent(
+            api_key="test-key",
+            retriever=mock_retriever,
+            client=mock_client,
+            multi_query_retriever=mock_multi_query_retriever,
+        )
 
         result = agent.ask("营业总收入是多少？", top_k=3)
 
@@ -96,7 +106,16 @@ class AgentTests(unittest.TestCase):
             ],
         )
         self.assertEqual(len(result["chunks"]), 2)
-        mock_retriever.search.assert_called_once_with("营业总收入是多少？", top_k=3, filters=None)
+        self.assertEqual(
+            result["retrieval_queries"],
+            ["营业总收入是多少？", "贵州茅台 营业总收入", "贵州茅台 2024 年 营业总收入"],
+        )
+        mock_multi_query_retriever.search_with_queries.assert_called_once_with(
+            "营业总收入是多少？",
+            top_k=3,
+            filters=None,
+            history_messages=None,
+        )
         mock_client.chat.completions.create.assert_called_once()
 
 
@@ -104,9 +123,12 @@ class ChatSessionTests(unittest.TestCase):
     def test_session_creates_unique_history_file_and_persists_turns(self) -> None:
         agent = MagicMock()
         agent.chat_model = "test-model"
-        agent.retriever.search.return_value = [
-            {"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2, "text": "收入 1", "score": 0.9}
-        ]
+        agent.multi_query_retriever.search_with_queries.return_value = (
+            [
+                {"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2, "text": "收入 1", "score": 0.9}
+            ],
+            ["营业收入是多少？", "贵州茅台 营业收入"],
+        )
 
         response = MagicMock()
         response.choices = [MagicMock()]
@@ -148,12 +170,22 @@ class ChatSessionTests(unittest.TestCase):
                 payload["turns"][0]["citations"],
                 [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2}],
             )
+            self.assertEqual(
+                payload["turns"][0]["retrieval_queries"],
+                ["营业收入是多少？", "贵州茅台 营业收入"],
+            )
 
     def test_run_turn_appends_full_history_to_messages(self) -> None:
         agent = MagicMock()
-        agent.retriever.search.side_effect = [
-            [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2, "text": "收入 1", "score": 0.9}],
-            [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 6, "text": "利润 2", "score": 0.8}],
+        agent.multi_query_retriever.search_with_queries.side_effect = [
+            (
+                [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2, "text": "收入 1", "score": 0.9}],
+                ["第一轮问题", "第一轮改写"],
+            ),
+            (
+                [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 6, "text": "利润 2", "score": 0.8}],
+                ["第二轮问题", "第二轮改写"],
+            ),
         ]
 
         first_response = MagicMock()
@@ -189,25 +221,50 @@ class ChatSessionTests(unittest.TestCase):
             result["citations"],
             [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 6}],
         )
+        self.assertEqual(result["retrieval_queries"], ["第二轮问题", "第二轮改写"])
 
-    def test_run_turn_keeps_retrieval_context_per_turn(self) -> None:
+    def test_run_turn_passes_recent_history_to_multi_query_retriever(self) -> None:
         agent = MagicMock()
-        agent.retriever.search.return_value = [
-            {"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2, "text": "收入 1", "score": 0.9}
+        agent.multi_query_retriever.search_with_queries.side_effect = [
+            (
+                [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2, "text": "收入 1", "score": 0.9}],
+                ["第一轮问题", "第一轮改写"],
+            ),
+            (
+                [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2, "text": "收入 1", "score": 0.9}],
+                ["第二轮问题", "第二轮改写"],
+            ),
         ]
 
-        response = MagicMock()
-        response.choices = [MagicMock()]
-        response.choices[0].message.content = "回答"
-        agent.client.chat.completions.create.return_value = response
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = "第一轮回答"
+
+        second_response = MagicMock()
+        second_response.choices = [MagicMock()]
+        second_response.choices[0].message.content = "第二轮回答"
+        agent.client.chat.completions.create.side_effect = [first_response, second_response]
 
         session = ChatSession(agent, top_k=5, filters={"doc_id": "doc-a"})
-        session.run_turn("营业收入是多少？")
+        session.run_turn("第一轮问题")
+        session.run_turn("第二轮问题")
 
-        agent.retriever.search.assert_called_once_with(
-            "营业收入是多少？",
-            top_k=5,
-            filters={"doc_id": "doc-a"},
+        second_call = agent.multi_query_retriever.search_with_queries.call_args_list[1]
+        self.assertEqual(second_call.args[0], "第二轮问题")
+        self.assertEqual(
+            second_call.kwargs["history_messages"],
+            [
+                {"role": "user", "content": "第一轮问题"},
+                {"role": "assistant", "content": "第一轮回答"},
+            ],
+        )
+        self.assertEqual(
+            second_call.kwargs["filters"],
+            {"doc_id": "doc-a"},
+        )
+        self.assertEqual(
+            second_call.kwargs["top_k"],
+            5,
         )
 
     def test_main_runs_repl_and_prints_answer_and_citations(self) -> None:

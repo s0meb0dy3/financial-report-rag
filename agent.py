@@ -8,7 +8,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from retriever import DEFAULT_OPENROUTER_BASE_URL, Retriever
+from retriever import DEFAULT_OPENROUTER_BASE_URL, MultiQueryRetriever, QueryRewriter, Retriever
 
 
 load_dotenv()
@@ -33,6 +33,7 @@ class Agent:
         base_url: str = DEFAULT_OPENROUTER_BASE_URL,
         chat_model: str = DEFAULT_CHAT_MODEL,
         retriever: Optional[Retriever] = None,
+        multi_query_retriever: Optional[MultiQueryRetriever] = None,
         client: Optional[OpenAI] = None,
     ):
         if not api_key:
@@ -44,6 +45,16 @@ class Agent:
         self.retriever = retriever or Retriever.from_env()
         self._owns_retriever = retriever is None
         self._client = client
+        self.multi_query_retriever = multi_query_retriever or MultiQueryRetriever(
+            base_retriever=self.retriever,
+            query_rewriter=QueryRewriter(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                chat_model=self.chat_model,
+                client=client,
+            ),
+        )
+        self._owns_multi_query_retriever = multi_query_retriever is None
 
     @property
     def client(self) -> OpenAI:
@@ -113,7 +124,12 @@ class Agent:
         top_k: int = 3,
         filters: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        chunks = self.retriever.search(question, top_k=top_k, filters=filters)
+        chunks, retrieval_queries = self.multi_query_retriever.search_with_queries(
+            question,
+            top_k=top_k,
+            filters=filters,
+            history_messages=None,
+        )
         user_message = self.build_user_message(question, chunks)
         answer = self.create_chat_completion(
             [
@@ -127,12 +143,16 @@ class Agent:
             "answer": answer,
             "citations": citations,
             "chunks": chunks,
+            "retrieval_queries": retrieval_queries,
         }
 
     def close(self) -> None:
         if self._client is not None:
             self._client.close()
             self._client = None
+
+        if self._owns_multi_query_retriever:
+            self.multi_query_retriever.close()
 
         if self._owns_retriever:
             self.retriever.close()
@@ -182,8 +202,20 @@ class ChatSession:
         with open(self.history_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
 
+    def build_rewrite_history_messages(self, limit_turns: int = 3) -> list[dict[str, str]]:
+        history_messages: list[dict[str, str]] = []
+        for turn in self.turns[-limit_turns:]:
+            history_messages.append({"role": "user", "content": turn["question"]})
+            history_messages.append({"role": "assistant", "content": turn["answer"]})
+        return history_messages
+
     def run_turn(self, question: str) -> dict[str, Any]:
-        chunks = self.agent.retriever.search(question, top_k=self.top_k, filters=self.filters)
+        chunks, retrieval_queries = self.agent.multi_query_retriever.search_with_queries(
+            question,
+            top_k=self.top_k,
+            filters=self.filters,
+            history_messages=self.build_rewrite_history_messages(),
+        )
         user_message = Agent.build_user_message(question, chunks)
 
         messages = [*self.messages, {"role": "user", "content": user_message}]
@@ -201,6 +233,7 @@ class ChatSession:
                 "question": question,
                 "answer": answer,
                 "citations": citations,
+                "retrieval_queries": retrieval_queries,
             }
         )
         self.save_history()
@@ -210,6 +243,7 @@ class ChatSession:
             "answer": answer,
             "citations": citations,
             "chunks": chunks,
+            "retrieval_queries": retrieval_queries,
         }
 
 
