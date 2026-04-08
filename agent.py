@@ -1,7 +1,9 @@
 import argparse
+import json
 import os
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -12,6 +14,8 @@ from retriever import DEFAULT_OPENROUTER_BASE_URL, Retriever
 load_dotenv()
 
 DEFAULT_CHAT_MODEL = "qwen/qwen3.6-plus:free"
+DEFAULT_SYSTEM_MESSAGE = "你是一个财报问答助手，只能依据提供的资料回答。"
+EXIT_COMMANDS = {"exit", "quit", "q"}
 
 
 class Agent:
@@ -96,30 +100,27 @@ class Agent:
             citations.append(citation)
         return citations
 
-    def chat(self, question: str, chunks: list[dict[str, Any]]) -> str:
-        user_message = self.build_user_message(question, chunks)
+    def create_chat_completion(self, messages: list[dict[str, str]]) -> str:
         response = self.client.chat.completions.create(
             model=self.chat_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "你是一个财报问答助手，只能依据提供的资料回答。",
-                },
-                {"role": "user", "content": user_message},
-            ],
+            messages=messages,
         )
         return self.extract_answer(response)
 
     def ask(
         self,
         question: str,
-        embeddings_path: Union[str, Path, None] = None,
         top_k: int = 3,
         filters: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        _ = embeddings_path
         chunks = self.retriever.search(question, top_k=top_k, filters=filters)
-        answer = self.chat(question, chunks)
+        user_message = self.build_user_message(question, chunks)
+        answer = self.create_chat_completion(
+            [
+                {"role": "system", "content": DEFAULT_SYSTEM_MESSAGE},
+                {"role": "user", "content": user_message},
+            ]
+        )
         citations = self.build_citations(chunks)
         return {
             "question": question,
@@ -143,19 +144,82 @@ class Agent:
         self.close()
 
 
+class ChatSession:
+    def __init__(
+        self,
+        agent: Agent,
+        top_k: int = 3,
+        filters: Optional[dict[str, Any]] = None,
+        history_dir: str = "logs",
+    ):
+        self.agent = agent
+        self.top_k = top_k
+        self.filters = filters
+        self.messages: list[dict[str, str]] = [
+            {"role": "system", "content": DEFAULT_SYSTEM_MESSAGE},
+        ]
+        self.turns: list[dict[str, Any]] = []
+        self.started_at = datetime.now().astimezone()
+        self.history_path = self._build_history_path(history_dir)
+        self.save_history()
+
+    def _build_history_path(self, history_dir: str) -> str:
+        directory = Path(history_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        filename = self.started_at.strftime("chat-%Y-%m-%d-%H%M%S.json")
+        return str(directory / filename)
+
+    def save_history(self) -> None:
+        model = getattr(self.agent, "chat_model", DEFAULT_CHAT_MODEL)
+        payload = {
+            "started_at": self.started_at.isoformat(),
+            "model": model if isinstance(model, str) else str(model),
+            "top_k": self.top_k,
+            "filters": self.filters,
+            "messages": self.messages,
+            "turns": self.turns,
+        }
+        with open(self.history_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    def run_turn(self, question: str) -> dict[str, Any]:
+        chunks = self.agent.retriever.search(question, top_k=self.top_k, filters=self.filters)
+        user_message = Agent.build_user_message(question, chunks)
+
+        messages = [*self.messages, {"role": "user", "content": user_message}]
+        response = self.agent.client.chat.completions.create(
+            model=self.agent.chat_model,
+            messages=messages,
+        )
+        answer = Agent.extract_answer(response)
+
+        self.messages.append({"role": "user", "content": user_message})
+        self.messages.append({"role": "assistant", "content": answer})
+        citations = Agent.build_citations(chunks)
+        self.turns.append(
+            {
+                "question": question,
+                "answer": answer,
+                "citations": citations,
+            }
+        )
+        self.save_history()
+
+        return {
+            "question": question,
+            "answer": answer,
+            "citations": citations,
+            "chunks": chunks,
+        }
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Ask questions about indexed financial reports.")
-    parser.add_argument("question", help="The question to ask")
-    parser.add_argument(
-        "--embeddings-path",
-        default="data/processed/embeddings.json",
-        help="Deprecated compatibility option. ChromaDB is used instead.",
-    )
+    parser = argparse.ArgumentParser(description="Chat with indexed financial reports.")
     parser.add_argument(
         "--top-k",
         type=int,
         default=3,
-        help="How many chunks to retrieve",
+        help="How many chunks to retrieve for each turn",
     )
     parser.add_argument(
         "--doc-id",
@@ -166,18 +230,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
-
     filters = {"doc_id": args.doc_id} if args.doc_id else None
 
     with Agent.from_env() as agent:
-        result = agent.ask(
-            args.question,
-            top_k=args.top_k,
-            filters=filters,
-        )
+        session = ChatSession(agent, top_k=args.top_k, filters=filters)
+        print("输入问题开始对话，输入 exit / quit / q 结束。")
 
-    print(result["answer"])
-    print(f"Citations: {result['citations']}")
+        while True:
+            try:
+                question = input("> ").strip()
+            except EOFError:
+                print()
+                break
+
+            if not question:
+                continue
+
+            if question.lower() in EXIT_COMMANDS:
+                break
+
+            try:
+                result = session.run_turn(question)
+            except Exception as exc:
+                print(f"Error: {exc}")
+                continue
+
+            print(result["answer"])
+            print(f"Citations: {result['citations']}")
+
     return 0
 
 

@@ -5,4 +5,5 @@ __pycache__/
 data/processed/
 data/chroma/
 data/eval/results/
+logs/
 *.pdf

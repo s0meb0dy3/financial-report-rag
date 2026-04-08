@@ -8,8 +8,9 @@ from ingest import chunk_page_text, discover_pdf_files, ingest_pdfs
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PDF_PATH = PROJECT_ROOT / "茅台2024年年度报告完整版.pdf"
-SECOND_PDF_PATH = PROJECT_ROOT / "长江电力2024年报.pdf"
+RAW_DIR = PROJECT_ROOT / "data" / "raw"
+PDF_PATH = RAW_DIR / "茅台2024年年度报告完整版.pdf"
+SECOND_PDF_PATH = RAW_DIR / "长江电力2024年报.pdf"
 
 
 class IngestPdfTests(unittest.TestCase):
