@@ -12,6 +12,7 @@ from app.retrieval.vector_store import ChromaVectorStore, VectorStore
 
 DEFAULT_EMBEDDING_MODEL = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_EMBEDDING_BATCH_SIZE = 200
 
 
 class RetrieverPort(Protocol):
@@ -34,6 +35,7 @@ class ChromaRetriever:
             api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             base_url=os.environ.get("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
             embedding_model=os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+            batch_size=int(os.environ.get("EMBEDDING_BATCH_SIZE", DEFAULT_EMBEDDING_BATCH_SIZE)),
         )
 
     def __init__(
@@ -42,6 +44,7 @@ class ChromaRetriever:
         base_url: str = DEFAULT_OPENROUTER_BASE_URL,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         timeout: float = 120,
+        batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
         vector_store: Optional[VectorStore] = None,
     ):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
@@ -50,6 +53,7 @@ class ChromaRetriever:
         self.base_url = base_url
         self.embedding_model = embedding_model
         self.timeout = timeout
+        self.batch_size = max(1, batch_size)
         self._client: Optional[httpx.Client] = None
         self.vector_store = vector_store or ChromaVectorStore.from_env()
 
@@ -74,6 +78,18 @@ class ChromaRetriever:
     def _load_json(path: Path) -> list[dict[str, Any]]:
         return json.loads(path.read_text(encoding="utf-8"))
 
+    @staticmethod
+    def _parse_embedding_response(response: httpx.Response) -> dict[str, Any]:
+        try:
+            return json.loads(response.text.lstrip())
+        except json.JSONDecodeError as exc:
+            preview = response.text[:500]
+            raise ValueError(
+                "Embedding API returned invalid JSON. "
+                f"status={response.status_code} content_type={response.headers.get('content-type')} "
+                f"body_preview={preview!r}"
+            ) from exc
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -83,17 +99,20 @@ class ChromaRetriever:
             json={"model": self.embedding_model, "input": texts},
         )
         response.raise_for_status()
-        embeddings = self._extract_embeddings(response.json())
+        embeddings = self._extract_embeddings(self._parse_embedding_response(response))
         if not embeddings:
             raise ValueError("No embedding data received")
         return embeddings
 
     def index_chunks(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        embeddings = self.embed([chunk["text"] for chunk in chunks])
-        embedded_chunks = [
-            {**chunk, "embedding": embedding}
-            for chunk, embedding in zip(chunks, embeddings, strict=True)
-        ]
+        embedded_chunks = []
+        for start in range(0, len(chunks), self.batch_size):
+            batch = chunks[start : start + self.batch_size]
+            embeddings = self.embed([chunk["text"] for chunk in batch])
+            embedded_chunks.extend(
+                {**chunk, "embedding": embedding}
+                for chunk, embedding in zip(batch, embeddings, strict=True)
+            )
         self.vector_store.upsert_documents(embedded_chunks)
         return embedded_chunks
 

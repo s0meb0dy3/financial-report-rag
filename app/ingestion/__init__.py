@@ -1,4 +1,7 @@
+from app.ingestion.chunking import StructuredDoclingChunker
+from app.ingestion.parsers import DoclingPdfParser
 from app.ingestion.service import (
+    IngestionService,
     build_arg_parser,
     build_doc_id,
     chunk_page_text,
@@ -11,8 +14,23 @@ from app.ingestion.service import (
     resolve_default_pdf_files,
     run_command,
 )
+from app.ingestion.types import (
+    ChunkRecord,
+    ChunkStrategy,
+    DocumentParser,
+    IngestionArtifacts,
+    ParsedDocument,
+)
 
 __all__ = [
+    "ChunkRecord",
+    "ChunkStrategy",
+    "DoclingPdfParser",
+    "DocumentParser",
+    "IngestionArtifacts",
+    "IngestionService",
+    "ParsedDocument",
+    "StructuredDoclingChunker",
     "build_arg_parser",
     "build_doc_id",
     "chunk_page_text",

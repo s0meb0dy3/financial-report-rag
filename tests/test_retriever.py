@@ -48,6 +48,48 @@ class RetrieverTests(unittest.TestCase):
 
         self.assertEqual(embeddings, [[0.1, 0.2], [0.3, 0.4]])
 
+    def test_parse_embedding_response_tolerates_leading_whitespace(self) -> None:
+        retriever = Retriever(api_key="test-key")
+
+        parsed = retriever._parse_embedding_response(
+            MagicMock(text="\n   {\"data\": [{\"embedding\": [0.1, 0.2]}]}")
+        )
+
+        self.assertEqual(parsed["data"][0]["embedding"], [0.1, 0.2])
+
+    def test_index_chunks_batches_embedding_requests(self) -> None:
+        vector_store = MagicMock()
+        retriever = Retriever(api_key="test-key", vector_store=vector_store, batch_size=2)
+        chunks = [
+            {
+                "chunk_id": f"doc-a-page-1-chunk-{index}",
+                "doc_id": "doc-a",
+                "doc_name": "doc-a.pdf",
+                "source_path": "/tmp/doc-a.pdf",
+                "page": 1,
+                "text": f"chunk-{index}",
+            }
+            for index in range(1, 6)
+        ]
+
+        with patch.object(
+            retriever,
+            "embed",
+            side_effect=[
+                [[1.0, 0.0], [0.0, 1.0]],
+                [[0.5, 0.5], [0.1, 0.9]],
+                [[0.2, 0.8]],
+            ],
+        ) as mock_embed:
+            embedded = retriever.index_chunks(chunks)
+
+        self.assertEqual(mock_embed.call_count, 3)
+        self.assertEqual(mock_embed.call_args_list[0].args[0], ["chunk-1", "chunk-2"])
+        self.assertEqual(mock_embed.call_args_list[1].args[0], ["chunk-3", "chunk-4"])
+        self.assertEqual(mock_embed.call_args_list[2].args[0], ["chunk-5"])
+        self.assertEqual(len(embedded), 5)
+        vector_store.upsert_documents.assert_called_once()
+
     def test_index_chunks_embeds_text_and_upserts_to_vector_store(self) -> None:
         vector_store = MagicMock()
         retriever = Retriever(api_key="test-key", vector_store=vector_store)

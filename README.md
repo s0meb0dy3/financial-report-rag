@@ -6,7 +6,8 @@
 
 目前支持：
 
-- 多个 PDF 的文本提取与切块
+- 基于 Docling 的 PDF 结构化解析
+- 基于结构信息的自定义分块
 - OpenRouter embedding 生成
 - ChromaDB 本地持久化检索
 - `search_reports` / `list_reports` 工具
@@ -46,7 +47,17 @@ CHROMA_COLLECTION_NAME=financial-report-chunks
 uv run python main.py ingest
 ```
 
-默认输出到 [`data/processed/chunks.json`](/Users/peteryao/projects/CaibaoAgent/data/processed/chunks.json)。
+默认会产出：
+
+- [`data/processed/chunks.json`](/Users/peteryao/projects/CaibaoAgent/data/processed/chunks.json)：正式索引输入
+- `data/processed/docling/*.json`：Docling 的 lossless JSON 真相源
+- `data/processed/markdown/*.md`：用于人工检查的 Markdown 调试产物
+
+如果不想导出 Markdown，可以传：
+
+```bash
+uv run python main.py ingest --disable-markdown-export
+```
 
 3. 建立向量索引
 
@@ -79,7 +90,7 @@ uv run python main.py eval
 ## 当前流程
 
 ```text
-PDFs -> chunks.json -> OpenRouter embeddings -> ChromaDB -> search_reports -> agent loop -> answer -> eval
+PDFs -> Docling JSON (+ optional Markdown) -> chunks.json -> OpenRouter embeddings -> ChromaDB -> search_reports -> agent loop -> answer -> eval
 ```
 
 ## 项目结构
