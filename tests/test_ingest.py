@@ -4,7 +4,7 @@ import unittest
 from shutil import copy2
 from pathlib import Path
 
-from ingest import chunk_page_text, discover_pdf_files, ingest_pdfs
+from app.ingestion import chunk_page_text, discover_pdf_files, ingest_pdfs
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

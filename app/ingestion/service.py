@@ -119,8 +119,11 @@ def resolve_default_pdf_files(project_root: Path, input_dir: Optional[Path] = No
     return sorted(path for path in project_root.glob("*.pdf") if path.is_file())
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Ingest one or more PDF files into chunk JSON.")
+def build_arg_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Ingest one or more PDF files into chunk JSON.",
+        add_help=add_help,
+    )
     parser.add_argument(
         "--input-dir",
         default="data/raw",
@@ -134,9 +137,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    args = build_arg_parser().parse_args(argv)
-    project_root = Path(__file__).resolve().parent
+def run_command(args: argparse.Namespace) -> int:
+    project_root = Path(__file__).resolve().parents[2]
     output_path = project_root / args.output_path
     input_dir = project_root / args.input_dir
 
@@ -150,5 +152,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def main(argv: Optional[list[str]] = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    return run_command(args)

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from eval import (
+from app.eval import (
     build_judge_messages,
     load_questions,
     main,
@@ -111,7 +111,7 @@ class EvalTests(unittest.TestCase):
             output_path = Path(temp_dir) / "results.json"
             questions_path.write_text(json.dumps(questions, ensure_ascii=False), encoding="utf-8")
 
-            with patch("eval.Agent.from_env", return_value=mock_context):
+            with patch("app.eval.Agent.from_env", return_value=mock_context):
                 with patch("sys.stdout", new_callable=io.StringIO) as stdout:
                     exit_code = main(
                         [
@@ -172,7 +172,7 @@ class EvalTests(unittest.TestCase):
             output_path = Path(temp_dir) / "results.json"
             questions_path.write_text(json.dumps(questions, ensure_ascii=False), encoding="utf-8")
 
-            with patch("eval.Agent.from_env", return_value=mock_context):
+            with patch("app.eval.Agent.from_env", return_value=mock_context):
                 with patch("sys.stdout", new_callable=io.StringIO) as stdout:
                     exit_code = main(
                         [

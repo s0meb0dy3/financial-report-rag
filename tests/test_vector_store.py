@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from vector_store import ChromaVectorStore
+from app.retrieval import ChromaVectorStore
 
 
 class ChromaVectorStoreTests(unittest.TestCase):
@@ -39,10 +39,10 @@ class ChromaVectorStoreTests(unittest.TestCase):
             results = reopened.search([1.0, 0.0], top_k=1)
 
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["chunk_id"], "doc-a-page-1-chunk-1")
-        self.assertEqual(results[0]["doc_name"], "doc-a.pdf")
-        self.assertEqual(results[0]["page"], 1)
-        self.assertIn("score", results[0])
+        self.assertEqual(results[0].chunk_id, "doc-a-page-1-chunk-1")
+        self.assertEqual(results[0].doc_name, "doc-a.pdf")
+        self.assertEqual(results[0].page, 1)
+        self.assertIsInstance(results[0].score, float)
 
     def test_search_supports_metadata_filters(self) -> None:
         chunks = [
@@ -76,7 +76,7 @@ class ChromaVectorStoreTests(unittest.TestCase):
             results = store.search([1.0, 0.0], top_k=3, filters={"doc_id": "doc-b"})
 
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["doc_id"], "doc-b")
+        self.assertEqual(results[0].doc_id, "doc-b")
 
 
 if __name__ == "__main__":

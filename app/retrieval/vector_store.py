@@ -4,6 +4,8 @@ from typing import Any, Optional, Protocol
 
 import chromadb
 
+from app.domain import DocumentRef, Evidence
+
 
 DEFAULT_CHROMA_PERSIST_DIR = "data/chroma"
 DEFAULT_CHROMA_COLLECTION_NAME = "financial-report-chunks"
@@ -13,12 +15,15 @@ class VectorStore(Protocol):
     def upsert_documents(self, chunks: list[dict[str, Any]]) -> None:
         ...
 
+    def list_documents(self) -> list[DocumentRef]:
+        ...
+
     def search(
         self,
         query_embedding: list[float],
         top_k: int = 3,
         filters: Optional[dict[str, Any]] = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[Evidence]:
         ...
 
     def close(self) -> None:
@@ -28,7 +33,7 @@ class VectorStore(Protocol):
 class ChromaVectorStore:
     @classmethod
     def from_env(cls) -> "ChromaVectorStore":
-        project_root = Path(__file__).resolve().parent
+        project_root = Path(__file__).resolve().parents[2]
         persist_dir = Path(
             os.environ.get(
                 "CHROMA_PERSIST_DIR",
@@ -71,12 +76,27 @@ class ChromaVectorStore:
             embeddings=[chunk["embedding"] for chunk in chunks],
         )
 
+    def list_documents(self) -> list[DocumentRef]:
+        response = self._collection.get(include=["metadatas"])
+        metadatas = response.get("metadatas", [])
+        seen = set()
+        documents = []
+        for metadata in metadatas:
+            metadata = metadata or {}
+            key = (metadata.get("doc_id", ""), metadata.get("doc_name", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            documents.append(DocumentRef(doc_id=key[0], doc_name=key[1]))
+        documents.sort(key=lambda item: item.doc_name)
+        return documents
+
     def search(
         self,
         query_embedding: list[float],
         top_k: int = 3,
         filters: Optional[dict[str, Any]] = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[Evidence]:
         response = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
@@ -93,15 +113,15 @@ class ChromaVectorStore:
         for chunk_id, document, metadata, distance in zip(ids, documents, metadatas, distances):
             metadata = metadata or {}
             results.append(
-                {
-                    "chunk_id": chunk_id,
-                    "doc_id": metadata.get("doc_id", ""),
-                    "doc_name": metadata.get("doc_name", ""),
-                    "source_path": metadata.get("source_path", ""),
-                    "page": metadata.get("page"),
-                    "text": document,
-                    "score": 1 - float(distance),
-                }
+                Evidence(
+                    doc_id=metadata.get("doc_id", ""),
+                    doc_name=metadata.get("doc_name", ""),
+                    page=metadata.get("page"),
+                    text=document,
+                    score=1 - float(distance),
+                    chunk_id=chunk_id,
+                    source_path=metadata.get("source_path", ""),
+                )
             )
         return results
 

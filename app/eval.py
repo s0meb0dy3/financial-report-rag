@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from agent import Agent
+from app.agent import Agent
 
 
 DEFAULT_QUESTIONS_PATH = "data/eval/questions.json"
@@ -146,8 +146,11 @@ def resolve_path(project_root: Path, path_str: str) -> Path:
     return project_root / path
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Evaluate the financial report QA pipeline.")
+def build_arg_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Evaluate the financial report QA pipeline.",
+        add_help=add_help,
+    )
     parser.add_argument(
         "--questions-path",
         default=DEFAULT_QUESTIONS_PATH,
@@ -172,9 +175,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    args = build_arg_parser().parse_args(argv)
-    project_root = Path(__file__).resolve().parent
+def run_eval_command(args: argparse.Namespace) -> int:
+    project_root = Path(__file__).resolve().parents[1]
     questions_path = resolve_path(project_root, args.questions_path)
     output_path = resolve_path(project_root, args.output_path)
     questions = load_questions(questions_path)
@@ -212,5 +214,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def main(argv: Optional[list[str]] = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    return run_eval_command(args)
+
+
+__all__ = [
+    "DEFAULT_OUTPUT_PATH",
+    "DEFAULT_QUESTIONS_PATH",
+    "build_arg_parser",
+    "build_judge_messages",
+    "evaluate_question",
+    "load_questions",
+    "main",
+    "parse_judge_result",
+    "resolve_path",
+    "run_eval_command",
+    "summarize_results",
+]
