@@ -26,6 +26,9 @@ class VectorStore(Protocol):
     ) -> list[Evidence]:
         ...
 
+    def get_all_documents(self, filters: Optional[dict[str, Any]] = None) -> list[Evidence]:
+        ...
+
     def close(self) -> None:
         ...
 
@@ -65,15 +68,56 @@ class ChromaVectorStore:
             ids=[chunk["chunk_id"] for chunk in chunks],
             documents=[chunk["text"] for chunk in chunks],
             metadatas=[
-                {
-                    "doc_id": chunk["doc_id"],
-                    "doc_name": chunk["doc_name"],
-                    "source_path": chunk["source_path"],
-                    "page": chunk["page"],
-                }
+                self._build_metadata(chunk)
                 for chunk in chunks
             ],
             embeddings=[chunk["embedding"] for chunk in chunks],
+        )
+
+    @staticmethod
+    def _build_metadata(chunk: dict[str, Any]) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "doc_id": chunk["doc_id"],
+            "doc_name": chunk["doc_name"],
+            "source_path": chunk["source_path"],
+            "chunk_type": chunk.get("chunk_type", ""),
+            "section_path_text": " > ".join(chunk.get("section_path", [])),
+        }
+        for key in ("page", "page_start", "page_end"):
+            value = chunk.get(key)
+            if value is not None:
+                metadata[key] = value
+        return metadata
+
+    @staticmethod
+    def _parse_section_path(metadata: dict[str, Any]) -> list[str]:
+        raw_value = str(metadata.get("section_path_text", "")).strip()
+        if not raw_value:
+            return []
+        return [part.strip() for part in raw_value.split(" > ") if part.strip()]
+
+    @classmethod
+    def _build_evidence(
+        cls,
+        *,
+        chunk_id: str,
+        document: str,
+        metadata: dict[str, Any] | None,
+        score: float = 0.0,
+    ) -> Evidence:
+        metadata = metadata or {}
+        return Evidence(
+            doc_id=metadata.get("doc_id", ""),
+            doc_name=metadata.get("doc_name", ""),
+            page=metadata.get("page"),
+            text=document,
+            score=score,
+            chunk_id=chunk_id,
+            source_path=metadata.get("source_path", ""),
+            chunk_type=metadata.get("chunk_type", ""),
+            section_path=cls._parse_section_path(metadata),
+            page_start=metadata.get("page_start"),
+            page_end=metadata.get("page_end"),
         )
 
     def list_documents(self) -> list[DocumentRef]:
@@ -111,19 +155,32 @@ class ChromaVectorStore:
 
         results = []
         for chunk_id, document, metadata, distance in zip(ids, documents, metadatas, distances):
-            metadata = metadata or {}
             results.append(
-                Evidence(
-                    doc_id=metadata.get("doc_id", ""),
-                    doc_name=metadata.get("doc_name", ""),
-                    page=metadata.get("page"),
-                    text=document,
-                    score=1 - float(distance),
+                self._build_evidence(
                     chunk_id=chunk_id,
-                    source_path=metadata.get("source_path", ""),
+                    document=document or "",
+                    metadata=metadata,
+                    score=1 - float(distance),
                 )
             )
         return results
+
+    def get_all_documents(self, filters: Optional[dict[str, Any]] = None) -> list[Evidence]:
+        response = self._collection.get(
+            where=filters or None,
+            include=["documents", "metadatas"],
+        )
+        ids = response.get("ids", [])
+        documents = response.get("documents", [])
+        metadatas = response.get("metadatas", [])
+        return [
+            self._build_evidence(
+                chunk_id=chunk_id,
+                document=document or "",
+                metadata=metadata,
+            )
+            for chunk_id, document, metadata in zip(ids, documents, metadatas)
+        ]
 
     def close(self) -> None:
         self._collection = None

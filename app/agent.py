@@ -6,7 +6,14 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from app.context import ContextBuilder
-from app.retrieval import DEFAULT_OPENROUTER_BASE_URL, ChromaRetriever
+from app.retrieval import (
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_OPENROUTER_BASE_URL,
+    ChromaRetriever,
+    HybridRetriever,
+    LLMQueryRewriter,
+)
 from app.runtime import OpenAIChatClient, SingleAgentRuntime
 from app.session import InMemorySessionStore
 from app.shared import (
@@ -74,10 +81,20 @@ class AgentLoop:
         self.top_k = top_k
         self.doc_id = doc_id
         self.max_tool_calls = max_tool_calls
-        self.retriever = retriever or ChromaRetriever.from_env()
+        self._client = client
+        self.retriever = retriever or HybridRetriever(
+            dense_retriever=ChromaRetriever(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                embedding_model=os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+                batch_size=int(
+                    os.environ.get("EMBEDDING_BATCH_SIZE", DEFAULT_EMBEDDING_BATCH_SIZE)
+                ),
+            ),
+            query_rewriter=LLMQueryRewriter(self.client, self.chat_model),
+        )
         self._owns_retriever = retriever is None
         self.tool_registry = tool_registry or build_default_tool_registry(self.retriever)
-        self._client = client
         self._runtime = SingleAgentRuntime(
             llm_client=OpenAIChatClient(self.client, self.chat_model),
             tool_registry=self.tool_registry,
@@ -204,6 +221,11 @@ def build_arg_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--doc-id",
         help="Optional document filter for retrieval",
     )
+    parser.add_argument(
+        "--verbose-retrieval",
+        action="store_true",
+        help="Print retrieval rewrite queries and top hit metadata for search tool calls",
+    )
     return parser
 
 
@@ -240,7 +262,8 @@ def run_chat_command(args: argparse.Namespace) -> int:
                         arguments=item.get("arguments", {}),
                         output=item.get("output", {}),
                         tool_call_id=item.get("tool_call_id", ""),
-                    )
+                    ),
+                    verbose_retrieval=args.verbose_retrieval,
                 )
             print_assistant(result["answer"])
 

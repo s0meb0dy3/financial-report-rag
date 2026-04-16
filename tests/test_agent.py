@@ -19,10 +19,11 @@ class AgentCliTests(unittest.TestCase):
     def test_build_arg_parser_reads_session_options(self) -> None:
         parser = build_arg_parser()
 
-        args = parser.parse_args(["--top-k", "5", "--doc-id", "moutai"])
+        args = parser.parse_args(["--top-k", "5", "--doc-id", "moutai", "--verbose-retrieval"])
 
         self.assertEqual(args.top_k, 5)
         self.assertEqual(args.doc_id, "moutai")
+        self.assertTrue(args.verbose_retrieval)
 
     def test_main_runs_repl_and_prints_colored_user_tool_and_assistant_output(self) -> None:
         fake_result = {
@@ -57,7 +58,56 @@ class AgentCliTests(unittest.TestCase):
         self.assertIn(f"{ANSI_CYAN}USER > {ANSI_RESET}", output)
         self.assertIn(f"{ANSI_YELLOW}TOOL: search_reports(query='营业总收入是多少？', top_k=2) -> 1 results{ANSI_RESET}", output)
         self.assertIn(f"{ANSI_GREEN}ASSISTANT: 第一轮回答{ANSI_RESET}", output)
+        self.assertNotIn("retrieval queries:", output)
         mock_loop.run_turn.assert_called_once_with("营业总收入是多少？")
+
+    def test_main_prints_verbose_retrieval_details_when_enabled(self) -> None:
+        fake_result = {
+            "answer": "第一轮回答",
+            "tool_results": [
+                {
+                    "tool_name": "search_reports",
+                    "arguments": {"query": "营业总收入是多少？", "top_k": 2, "doc_id": "doc-a"},
+                    "output": {
+                        "query": "营业总收入是多少？",
+                        "retrieval_queries": ["营业总收入是多少？", "主要会计数据 营业总收入"],
+                        "results": [
+                            {
+                                "doc_id": "doc-a",
+                                "doc_name": "doc-a.pdf",
+                                "page": 2,
+                                "page_start": 2,
+                                "page_end": 2,
+                                "chunk_type": "table",
+                                "section_path": ["第一章", "主要会计数据"],
+                                "text": "营业总收入 1741.44 亿元。",
+                                "score": 0.1234,
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+
+        mock_loop = MagicMock()
+        mock_loop.run_turn.return_value = fake_result
+
+        mock_context = MagicMock()
+        mock_context.__enter__.return_value = mock_loop
+        mock_context.__exit__.return_value = None
+
+        with patch("app.agent.AgentLoop.from_env", return_value=mock_context):
+            with patch("builtins.input", side_effect=["营业总收入是多少？", "exit"]):
+                with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                    exit_code = main(["--verbose-retrieval", "--doc-id", "doc-a"])
+
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("retrieval queries:", output)
+        self.assertIn("- 营业总收入是多少？", output)
+        self.assertIn("- 主要会计数据 营业总收入", output)
+        self.assertIn("[1] p.2 table score=0.1234 section=第一章 / 主要会计数据", output)
+        self.assertIn("营业总收入 1741.44 亿元。", output)
 
     def test_main_skips_empty_input(self) -> None:
         mock_loop = MagicMock()

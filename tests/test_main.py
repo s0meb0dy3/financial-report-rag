@@ -8,11 +8,12 @@ class MainCliTests(unittest.TestCase):
     def test_build_arg_parser_reads_chat_subcommand_options(self) -> None:
         parser = build_arg_parser()
 
-        args = parser.parse_args(["chat", "--top-k", "5", "--doc-id", "moutai"])
+        args = parser.parse_args(["chat", "--top-k", "5", "--doc-id", "moutai", "--verbose-retrieval"])
 
         self.assertEqual(args.command, "chat")
         self.assertEqual(args.top_k, 5)
         self.assertEqual(args.doc_id, "moutai")
+        self.assertTrue(args.verbose_retrieval)
 
     def test_main_dispatches_chat_command(self) -> None:
         with patch("main.run_chat_command", return_value=0) as mock_run:

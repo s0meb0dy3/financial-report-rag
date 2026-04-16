@@ -27,6 +27,9 @@ class RetrieverPort(Protocol):
     def list_documents(self) -> list[DocumentRef]:
         ...
 
+    def get_last_retrieval_queries(self) -> list[str]:
+        ...
+
 
 class ChromaRetriever:
     @classmethod
@@ -56,6 +59,7 @@ class ChromaRetriever:
         self.batch_size = max(1, batch_size)
         self._client: Optional[httpx.Client] = None
         self.vector_store = vector_store or ChromaVectorStore.from_env()
+        self._last_retrieval_queries: list[str] = []
 
     @property
     def client(self) -> httpx.Client:
@@ -126,11 +130,18 @@ class ChromaRetriever:
         top_k: int = 3,
         filters: Optional[dict[str, Any]] = None,
     ) -> list[Evidence]:
+        self._last_retrieval_queries = [query]
         query_embedding = self.embed([query])[0]
         return self.vector_store.search(query_embedding, top_k=top_k, filters=filters)
 
+    def get_all_documents(self, filters: Optional[dict[str, Any]] = None) -> list[Evidence]:
+        return self.vector_store.get_all_documents(filters=filters)
+
     def list_documents(self) -> list[DocumentRef]:
         return self.vector_store.list_documents()
+
+    def get_last_retrieval_queries(self) -> list[str]:
+        return list(self._last_retrieval_queries)
 
     def close(self) -> None:
         if self._client:

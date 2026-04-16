@@ -15,10 +15,15 @@ class ToolTests(unittest.TestCase):
                 doc_name="doc-a.pdf",
                 source_path="/tmp/doc-a.pdf",
                 page=1,
+                page_start=1,
+                page_end=1,
+                chunk_type="table",
+                section_path=["第一章", "财务摘要"],
                 text="收入增长",
                 score=0.91,
             )
         ]
+        retriever.get_last_retrieval_queries.return_value = ["营业总收入是多少？", "主要会计数据 营业总收入"]
         tool = build_search_reports_tool(retriever)
 
         result = tool.execute(query="营业总收入是多少？", top_k=2, doc_id="doc-a")
@@ -27,8 +32,21 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result["query"], "营业总收入是多少？")
         self.assertEqual(
             result["results"],
-            [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 1, "text": "收入增长", "score": 0.91}],
+            [
+                {
+                    "doc_id": "doc-a",
+                    "doc_name": "doc-a.pdf",
+                    "page": 1,
+                    "page_start": 1,
+                    "page_end": 1,
+                    "chunk_type": "table",
+                    "section_path": ["第一章", "财务摘要"],
+                    "text": "收入增长",
+                    "score": 0.91,
+                }
+            ],
         )
+        self.assertEqual(result["retrieval_queries"], ["营业总收入是多少？", "主要会计数据 营业总收入"])
 
     def test_search_reports_returns_empty_results(self) -> None:
         retriever = MagicMock()
@@ -37,7 +55,14 @@ class ToolTests(unittest.TestCase):
 
         result = tool.execute(query="营业总收入是多少？")
 
-        self.assertEqual(result, {"query": "营业总收入是多少？", "results": []})
+        self.assertEqual(
+            result,
+            {
+                "query": "营业总收入是多少？",
+                "retrieval_queries": ["营业总收入是多少？"],
+                "results": [],
+            },
+        )
 
     def test_list_reports_returns_unique_sorted_documents(self) -> None:
         retriever = MagicMock()

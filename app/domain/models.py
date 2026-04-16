@@ -13,6 +13,10 @@ class Evidence:
     score: float = 0.0
     chunk_id: str = ""
     source_path: str = ""
+    chunk_type: str = ""
+    section_path: list[str] = field(default_factory=list)
+    page_start: int | None = None
+    page_end: int | None = None
 
 
 @dataclass

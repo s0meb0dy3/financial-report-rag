@@ -8,13 +8,24 @@ def build_search_reports_tool(retriever: RetrieverPort) -> RegisteredTool:
     def handler(query: str, top_k: int = 3, doc_id: Optional[str] = None) -> dict:
         filters = {"doc_id": doc_id} if doc_id else None
         results = retriever.search(query, top_k=top_k, filters=filters)
+        retrieval_queries_getter = getattr(retriever, "get_last_retrieval_queries", None)
+        retrieval_queries = retrieval_queries_getter() if callable(retrieval_queries_getter) else None
+        if not isinstance(retrieval_queries, list) or not all(
+            isinstance(item, str) for item in retrieval_queries
+        ):
+            retrieval_queries = [query]
         return {
             "query": query,
+            "retrieval_queries": retrieval_queries or [query],
             "results": [
                 {
                     "doc_id": result.doc_id,
                     "doc_name": result.doc_name,
                     "page": result.page,
+                    "page_start": result.page_start,
+                    "page_end": result.page_end,
+                    "chunk_type": result.chunk_type,
+                    "section_path": result.section_path,
                     "text": result.text,
                     "score": result.score,
                 }
