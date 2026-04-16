@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from app.domain import ConversationState
-from app.messages import AssistantMessage, ToolCall
+from app.messages import AssistantMessage, ToolCall, ToolResultMessage, UserMessage
 from app.runtime import SingleAgentRuntime
 from app.session import InMemorySessionStore
 
@@ -53,6 +53,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.answer, "最终回答")
         self.assertEqual(result.tool_traces[0].tool_name, "search_reports")
         self.assertEqual(result.tool_traces[0].output["results"][0]["doc_name"], "doc-a.pdf")
+        self.assertIsInstance(result.updated_state.messages[0], UserMessage)
+        self.assertIsInstance(result.updated_state.messages[1], AssistantMessage)
+        self.assertEqual(result.updated_state.messages[1].tool_calls[0].tool_name, "search_reports")
+        self.assertIsInstance(result.updated_state.messages[2], ToolResultMessage)
 
 
 if __name__ == "__main__":

@@ -7,3 +7,5 @@ data/chroma/
 data/eval/results/
 logs/
 *.pdf
+.worktrees/
+.DS_Store

@@ -20,18 +20,12 @@ class ToolSpec:
 
 
 @dataclass
-class ToolResult:
-    tool_name: str
-    output: dict[str, Any]
-
-
-@dataclass
 class RegisteredTool:
     spec: ToolSpec
     handler: Callable[..., dict[str, Any]]
 
-    def execute(self, **kwargs: Any) -> ToolResult:
-        return ToolResult(tool_name=self.spec.name, output=self.handler(**kwargs))
+    def execute(self, **kwargs: Any) -> dict[str, Any]:
+        return self.handler(**kwargs)
 
 
 class ToolRegistry:
@@ -42,4 +36,4 @@ class ToolRegistry:
         return [tool.spec.to_openai_definition() for tool in self._tools.values()]
 
     def execute(self, tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        return self._tools[tool_name].execute(**kwargs).output
+        return self._tools[tool_name].execute(**kwargs)

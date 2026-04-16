@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from app.agent import (
+    Agent,
     ANSI_CYAN,
     ANSI_GRAY,
     ANSI_GREEN,
@@ -91,6 +92,30 @@ class AgentCliTests(unittest.TestCase):
         self.assertIn(f"{ANSI_RED}ERROR: rate limited{ANSI_RESET}", output)
         self.assertIn(f"{ANSI_GREEN}ASSISTANT: 恢复成功{ANSI_RESET}", output)
         self.assertEqual(mock_loop.run_turn.call_count, 2)
+
+
+class AgentServiceTests(unittest.TestCase):
+    def test_ask_passes_turn_overrides_without_mutating_loop_defaults(self) -> None:
+        loop = MagicMock()
+        loop.chat_model = "qwen/qwen3.6-plus:free"
+        loop.client = object()
+        loop.top_k = 3
+        loop.doc_id = "default-doc"
+        loop.run_turn.return_value = {
+            "answer": "回答",
+            "citations": [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2}],
+            "tool_results": [],
+        }
+
+        agent = Agent(loop)
+
+        result = agent.ask("营业总收入是多少？", top_k=5, filters={"doc_id": "doc-a"})
+
+        self.assertEqual(result["answer"], "回答")
+        self.assertEqual(result["citations"][0]["doc_id"], "doc-a")
+        loop.run_turn.assert_called_once_with("营业总收入是多少？", top_k=5, doc_id="doc-a")
+        self.assertEqual(loop.top_k, 3)
+        self.assertEqual(loop.doc_id, "default-doc")
 
 
 if __name__ == "__main__":

@@ -37,15 +37,6 @@ class AssistantMessage(BaseMessage):
     role: str = "assistant"
     tool_calls: list[ToolCall] = field(default_factory=list)
 
-
-@dataclass
-class ToolCallMessage(BaseMessage):
-    tool_name: str = ""
-    tool_call_id: str = ""
-    arguments: dict[str, Any] = field(default_factory=dict)
-    role: str = "assistant"
-
-
 @dataclass
 class ToolResultMessage(BaseMessage):
     tool_name: str = ""
@@ -78,25 +69,6 @@ class OpenAIMessageAdapter:
                         for tool_call in message.tool_calls
                     ]
                 payload.append(item)
-                continue
-
-            if isinstance(message, ToolCallMessage):
-                payload.append(
-                    {
-                        "role": "assistant",
-                        "content": message.content,
-                        "tool_calls": [
-                            {
-                                "id": message.tool_call_id,
-                                "type": "function",
-                                "function": {
-                                    "name": message.tool_name,
-                                    "arguments": json.dumps(message.arguments, ensure_ascii=False),
-                                },
-                            }
-                        ],
-                    }
-                )
                 continue
 
             if isinstance(message, ToolResultMessage):

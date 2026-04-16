@@ -4,8 +4,6 @@ from app.context import ContextBuilder
 from app.domain import Citation, ConversationState, ToolTrace, TurnResult
 from app.messages import (
     AssistantMessage,
-    SystemMessage,
-    ToolCallMessage,
     ToolResultMessage,
     UserMessage,
 )
@@ -31,13 +29,15 @@ class SingleAgentRuntime:
         self.session_store = session_store or InMemorySessionStore()
         self.context_builder = context_builder or ContextBuilder()
         self.max_tool_calls = max_tool_calls
-        self.system_prompt = ""
 
-    def run_turn(self, user_text: str, session_id: str | None = None) -> TurnResult:
+    def run_turn(
+        self,
+        user_text: str,
+        session_id: str | None = None,
+        tool_argument_preparer=None,
+    ) -> TurnResult:
         active_session_id = session_id or "default"
         state = self.session_store.load(active_session_id)
-        if self.system_prompt and not any(message.role == "system" for message in state.messages):
-            state.messages.insert(0, SystemMessage(content=self.system_prompt))
         messages = self.context_builder.build(state, user_text)
         tool_traces: list[ToolTrace] = []
         tool_call_count = 0
@@ -57,23 +57,20 @@ class SingleAgentRuntime:
                     updated_state=updated_state,
                 )
 
+            messages.append(assistant_message)
             for tool_call in assistant_message.tool_calls:
                 if tool_call_count >= self.max_tool_calls:
                     break
-                output = self.tool_registry.execute(tool_call.tool_name, **tool_call.arguments)
+                execution_arguments = dict(tool_call.arguments)
+                if tool_argument_preparer is not None:
+                    execution_arguments = tool_argument_preparer(tool_call.tool_name, execution_arguments)
+                output = self.tool_registry.execute(tool_call.tool_name, **execution_arguments)
                 tool_traces.append(
                     ToolTrace(
                         tool_name=tool_call.tool_name,
-                        arguments=tool_call.arguments,
+                        arguments=execution_arguments,
                         output=output,
                         tool_call_id=tool_call.tool_call_id,
-                    )
-                )
-                messages.append(
-                    ToolCallMessage(
-                        tool_name=tool_call.tool_name,
-                        tool_call_id=tool_call.tool_call_id,
-                        arguments=tool_call.arguments,
                     )
                 )
                 messages.append(

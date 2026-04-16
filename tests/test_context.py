@@ -39,6 +39,15 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertEqual(messages[1].role, "tool")
         self.assertEqual(messages[1].tool_name, "search_reports")
 
+    def test_build_does_not_duplicate_existing_system_message(self) -> None:
+        state = ConversationState(messages=[SystemMessage(content="system"), UserMessage(content="上一轮问题")])
+        builder = ContextBuilder(system_prompt="new system")
+
+        messages = builder.build(state, "这轮问题")
+
+        self.assertEqual([message.role for message in messages], ["system", "user", "user"])
+        self.assertEqual(messages[0].content, "system")
+
 
 if __name__ == "__main__":
     unittest.main()

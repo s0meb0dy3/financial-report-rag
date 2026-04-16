@@ -4,7 +4,6 @@ from app.messages.models import (
     OpenAIMessageAdapter,
     SystemMessage,
     ToolCall,
-    ToolCallMessage,
     ToolResultMessage,
     UserMessage,
 )
@@ -15,7 +14,6 @@ __all__ = [
     "OpenAIMessageAdapter",
     "SystemMessage",
     "ToolCall",
-    "ToolCallMessage",
     "ToolResultMessage",
     "UserMessage",
 ]

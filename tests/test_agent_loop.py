@@ -66,6 +66,10 @@ class AgentLoopTests(unittest.TestCase):
         result = loop.run_turn("营业总收入是多少？")
 
         self.assertEqual(result["answer"], "基于检索结果的最终回答")
+        self.assertEqual(
+            result["citations"],
+            [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 2}],
+        )
         self.assertEqual(len(result["tool_results"]), 1)
         self.assertEqual(result["tool_results"][0]["tool_name"], "search_reports")
         self.assertEqual(result["tool_results"][0]["arguments"], {"query": "营业总收入是多少？", "top_k": 2})
@@ -105,6 +109,58 @@ class AgentLoopTests(unittest.TestCase):
         final_call_messages = client.chat.completions.create.call_args_list[-1].kwargs["messages"]
         self.assertEqual(final_call_messages[-1]["role"], "user")
         self.assertIn("不要继续调用工具", final_call_messages[-1]["content"])
+
+    def test_run_turn_uses_instance_defaults_for_search_reports(self) -> None:
+        tool_call = MagicMock()
+        tool_call.id = "call-1"
+        tool_call.function.name = "search_reports"
+        tool_call.function.arguments = json.dumps({"query": "营业总收入是多少？"}, ensure_ascii=False)
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            make_response(make_message(tool_calls=[tool_call])),
+            make_response(make_message(content="默认参数回答")),
+        ]
+
+        tool_registry = MagicMock()
+        tool_registry.get_definitions.return_value = [{"type": "function", "function": {"name": "search_reports"}}]
+        tool_registry.execute.return_value = {"query": "营业总收入是多少？", "results": []}
+        loop = AgentLoop(api_key="test-key", client=client, tool_registry=tool_registry, top_k=4, doc_id="doc-a")
+
+        loop.run_turn("营业总收入是多少？")
+
+        tool_registry.execute.assert_called_once_with(
+            "search_reports",
+            query="营业总收入是多少？",
+            top_k=4,
+            doc_id="doc-a",
+        )
+
+    def test_run_turn_allows_turn_level_search_override(self) -> None:
+        tool_call = MagicMock()
+        tool_call.id = "call-1"
+        tool_call.function.name = "search_reports"
+        tool_call.function.arguments = json.dumps({"query": "营业总收入是多少？"}, ensure_ascii=False)
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            make_response(make_message(tool_calls=[tool_call])),
+            make_response(make_message(content="覆盖参数回答")),
+        ]
+
+        tool_registry = MagicMock()
+        tool_registry.get_definitions.return_value = [{"type": "function", "function": {"name": "search_reports"}}]
+        tool_registry.execute.return_value = {"query": "营业总收入是多少？", "results": []}
+        loop = AgentLoop(api_key="test-key", client=client, tool_registry=tool_registry, top_k=3, doc_id="default")
+
+        loop.run_turn("营业总收入是多少？", top_k=5, doc_id="doc-b")
+
+        tool_registry.execute.assert_called_once_with(
+            "search_reports",
+            query="营业总收入是多少？",
+            top_k=5,
+            doc_id="doc-b",
+        )
 
 
 if __name__ == "__main__":

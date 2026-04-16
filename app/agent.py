@@ -38,22 +38,6 @@ MAX_TOOL_CALLS = 5
 EXIT_COMMANDS = {"exit", "quit", "q"}
 
 
-class _LoopToolRegistry:
-    def __init__(self, owner: "AgentLoop", registry):
-        self.owner = owner
-        self.registry = registry
-
-    def get_definitions(self):
-        return self.registry.get_definitions()
-
-    def execute(self, tool_name: str, **kwargs):
-        if tool_name == "search_reports":
-            kwargs.setdefault("top_k", self.owner.top_k)
-            if self.owner.doc_id and "doc_id" not in kwargs:
-                kwargs["doc_id"] = self.owner.doc_id
-        return self.registry.execute(tool_name, **kwargs)
-
-
 class AgentLoop:
     @classmethod
     def from_env(
@@ -92,10 +76,7 @@ class AgentLoop:
         self.max_tool_calls = max_tool_calls
         self.retriever = retriever or ChromaRetriever.from_env()
         self._owns_retriever = retriever is None
-        if tool_registry is None:
-            self.tool_registry = _LoopToolRegistry(self, build_default_tool_registry(self.retriever))
-        else:
-            self.tool_registry = tool_registry
+        self.tool_registry = tool_registry or build_default_tool_registry(self.retriever)
         self._client = client
         self._runtime = SingleAgentRuntime(
             llm_client=OpenAIChatClient(self.client, self.chat_model),
@@ -111,8 +92,40 @@ class AgentLoop:
             self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         return self._client
 
-    def run_turn(self, question: str) -> dict[str, Any]:
-        result = self._runtime.run_turn(question)
+    @staticmethod
+    def _prepare_tool_arguments(
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        top_k: int,
+        doc_id: Optional[str],
+    ) -> dict[str, Any]:
+        if tool_name != "search_reports":
+            return arguments
+
+        prepared = dict(arguments)
+        prepared.setdefault("top_k", top_k)
+        if doc_id is not None:
+            prepared.setdefault("doc_id", doc_id)
+        return prepared
+
+    def run_turn(
+        self,
+        question: str,
+        top_k: Optional[int] = None,
+        doc_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        resolved_top_k = self.top_k if top_k is None else top_k
+        resolved_doc_id = self.doc_id if doc_id is None else doc_id
+        result = self._runtime.run_turn(
+            question,
+            tool_argument_preparer=lambda tool_name, arguments: self._prepare_tool_arguments(
+                tool_name,
+                arguments,
+                top_k=resolved_top_k,
+                doc_id=resolved_doc_id,
+            ),
+        )
         return {
             "answer": result.answer,
             "citations": [
@@ -155,16 +168,11 @@ class Agent:
         self.client = loop.client
 
     def ask(self, question: str, top_k: int = 3, filters: Optional[dict] = None) -> dict:
-        original_top_k = self.loop.top_k
-        original_doc_id = self.loop.doc_id
-        self.loop.top_k = top_k
-        self.loop.doc_id = filters.get("doc_id") if filters else None
-        try:
-            result = self.loop.run_turn(question)
-        finally:
-            self.loop.top_k = original_top_k
-            self.loop.doc_id = original_doc_id
-
+        result = self.loop.run_turn(
+            question,
+            top_k=top_k,
+            doc_id=filters.get("doc_id") if filters else None,
+        )
         return {
             "question": question,
             "answer": result["answer"],

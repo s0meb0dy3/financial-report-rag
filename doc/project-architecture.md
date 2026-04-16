@@ -33,6 +33,64 @@ PDF
 1. `Docling JSON` 是正式真相源，Markdown 只是辅助检查产物
 2. ingestion、retrieval、agent 三层保持解耦，后续可以独立替换解析器、分块器、embedding 模型或向量库
 
+当前还保留一个很明确的边界：
+
+- 项目已经有可复用的服务层，但还没有对外封装 FastAPI 应用
+- 对外使用方式目前是 CLI 和 Python 代码直接调用 `Agent` / `AgentLoop`
+
+### 2.1 当前架构图
+
+```mermaid
+flowchart TD
+    A["main.py<br/>统一 CLI 入口"] --> B["ingest"]
+    A --> C["index"]
+    A --> D["chat"]
+    A --> E["eval"]
+
+    subgraph ING["Ingestion"]
+        B --> B1["DoclingPdfParser"]
+        B1 --> B2["StructuredDoclingChunker"]
+        B2 --> B3["chunks.json"]
+        B1 --> B4["docling/*.json"]
+        B1 --> B5["markdown/*.md"]
+    end
+
+    subgraph RET["Retrieval"]
+        C --> C1["ChromaRetriever"]
+        B3 --> C1
+        C1 --> C2["ChromaVectorStore"]
+    end
+
+    subgraph AG["Chat Runtime"]
+        D --> D1["AgentLoop"]
+        D1 --> D2["SingleAgentRuntime"]
+        D2 --> D3["ContextBuilder"]
+        D2 --> D4["OpenAIChatClient"]
+        D2 --> D5["ToolRegistry"]
+        D5 --> T1["search_reports"]
+        D5 --> T2["list_reports"]
+        T1 --> C1
+        T2 --> C1
+        C1 --> D2
+        D2 --> D6["answer + citations + tool traces"]
+    end
+
+    subgraph SUP["Shared Models"]
+        S1["messages"]
+        S2["session"]
+        S3["domain"]
+    end
+
+    D2 -.依赖.-> S1
+    D2 -.依赖.-> S2
+    D2 -.依赖.-> S3
+
+    subgraph EV["Evaluation"]
+        E --> E1["固定问题集"]
+        E1 --> D1
+    end
+```
+
 ## 3. 模块划分
 
 ### 3.1 入口层
@@ -192,6 +250,20 @@ PDF
 
 它的职责是“调度和对话”，不是“理解 PDF 结构”或“直接做检索实现”。
 
+当前这层在实现上已经收敛成比较直接的主链路：
+
+- `AgentLoop` 负责组装依赖、维护默认 `top_k` / `doc_id`，并在每轮调用时把默认检索参数补给 `search_reports`
+- `ContextBuilder` 只负责一件事：把 system prompt 和新一轮用户消息拼进上下文
+- `SingleAgentRuntime` 只负责消息循环、工具执行、会话保存和 citation 提取
+- `AssistantMessage` 直接承载模型产生的 `tool_calls`
+- `ToolResultMessage` 负责把工具输出回填给模型
+
+这样 `chat` 主流程可以直接读成：
+
+```text
+组消息 -> 调模型 -> 执行工具 -> 回填证据 -> 最终回答
+```
+
 ### 3.6 Eval 层
 
 - [`app/eval.py`](/Users/peteryao/projects/CaibaoAgent/app/eval.py)
@@ -227,12 +299,15 @@ main.py index
 ```text
 main.py chat
 -> user question
--> agent loop
--> search_reports tool
+-> AgentLoop.run_turn(...)
+-> ContextBuilder.build(...)
+-> SingleAgentRuntime
+-> OpenAIChatClient.generate(...)
+-> search_reports / list_reports
 -> retriever.search(...)
 -> Chroma similarity search
--> supporting evidence
--> final answer
+-> ToolResultMessage
+-> final answer + citations
 ```
 
 ## 5. 当前设计的优点
@@ -249,6 +324,13 @@ Parser、Chunker、Service 已经拆开，后续可以独立替换：
 - 分块策略
 - 中间产物导出形式
 - 索引策略
+
+同时，问答主链路也已经去掉了一些过薄的包装层，保留了更稳定的大边界：
+
+- `agent`
+- `runtime`
+- `tools`
+- `retrieval`
 
 ### 5.3 调试路径更明确
 
@@ -285,6 +367,17 @@ Parser、Chunker、Service 已经拆开，后续可以独立替换：
 - 更精细的表格序列化
 - 章节摘要 / 父子块策略
 - 针对财报目录页、附注、脚注做差异化处理
+
+### 6.4 API 层还未落地
+
+当前仓库虽然已经把服务层职责拆清楚了，但还没有真正提供：
+
+- FastAPI app 入口
+- HTTP 路由
+- 请求 / 响应 schema
+- Web 服务启动方式
+
+这意味着现在的“后端能力”更准确地说是“可复用的 Python 服务层”，而不是完整的 HTTP API 服务。
 
 ## 7. 推荐理解顺序
 

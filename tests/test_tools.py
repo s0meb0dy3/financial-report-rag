@@ -21,7 +21,7 @@ class ToolTests(unittest.TestCase):
         ]
         tool = build_search_reports_tool(retriever)
 
-        result = tool.execute(query="营业总收入是多少？", top_k=2, doc_id="doc-a").output
+        result = tool.execute(query="营业总收入是多少？", top_k=2, doc_id="doc-a")
 
         retriever.search.assert_called_once_with("营业总收入是多少？", top_k=2, filters={"doc_id": "doc-a"})
         self.assertEqual(result["query"], "营业总收入是多少？")
@@ -35,7 +35,7 @@ class ToolTests(unittest.TestCase):
         retriever.search.return_value = []
         tool = build_search_reports_tool(retriever)
 
-        result = tool.execute(query="营业总收入是多少？").output
+        result = tool.execute(query="营业总收入是多少？")
 
         self.assertEqual(result, {"query": "营业总收入是多少？", "results": []})
 
@@ -47,7 +47,7 @@ class ToolTests(unittest.TestCase):
         ]
         tool = build_list_reports_tool(retriever)
 
-        result = tool.execute().output
+        result = tool.execute()
 
         retriever.list_documents.assert_called_once_with()
         self.assertEqual(
