@@ -111,6 +111,33 @@ class RetrieverTests(unittest.TestCase):
         vector_store.upsert_documents.assert_called_once()
         self.assertEqual(embedded[0]["embedding"], [1.0, 0.0])
 
+    def test_index_chunks_condenses_long_table_for_embedding_only(self) -> None:
+        vector_store = MagicMock()
+        retriever = Retriever(api_key="test-key", vector_store=vector_store)
+        long_text = "项目 | 金额\n" + ("数据行\n" * 3000)
+        chunks = [
+            {
+                "chunk_id": "doc-a-chunk-1",
+                "doc_id": "doc-a",
+                "doc_name": "doc-a.pdf",
+                "source_path": "/tmp/doc-a.pdf",
+                "page_start": 61,
+                "page_end": 63,
+                "chunk_type": "table",
+                "section_path": ["母公司资产负债表"],
+                "text": long_text,
+            }
+        ]
+
+        with patch.object(retriever, "embed", return_value=[[1.0, 0.0]]) as mock_embed:
+            embedded = retriever.index_chunks(chunks)
+
+        embedding_input = mock_embed.call_args.args[0][0]
+        self.assertLess(len(embedding_input), len(long_text))
+        self.assertIn("table chunk", embedding_input)
+        self.assertEqual(embedded[0]["text"], long_text)
+        vector_store.upsert_documents.assert_called_once()
+
     def test_search_embeds_query_and_delegates_to_vector_store(self) -> None:
         vector_store = MagicMock()
         vector_store.search.return_value = [

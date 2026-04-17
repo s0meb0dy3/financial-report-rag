@@ -38,6 +38,10 @@ def format_tool_value(value: Any) -> str:
 
 
 def tool_result_count(tool_name: str, output: dict[str, Any]) -> Optional[int]:
+    if tool_name == "search_tables":
+        return len(output.get("tables", []))
+    if tool_name == "extract_table":
+        return 1 if isinstance(output.get("table"), dict) else 0
     if tool_name == "search_reports":
         return len(output.get("results", []))
     if tool_name == "list_reports":

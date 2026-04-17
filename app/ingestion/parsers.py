@@ -25,7 +25,7 @@ def _extract_pages_from_provenance(provenance: list[dict[str, Any]]) -> tuple[in
     return min(page_numbers), max(page_numbers)
 
 
-def _markdown_table_from_data(table_data: dict[str, Any]) -> str:
+def _table_matrix_from_data(table_data: dict[str, Any]) -> list[list[str]]:
     grid = table_data.get("grid") or []
     rows: list[list[str]] = []
     for row in grid:
@@ -46,6 +46,11 @@ def _markdown_table_from_data(table_data: dict[str, Any]) -> str:
             while len(rows) <= row_index:
                 rows.append([])
             rows[row_index].append(str(cell.get("text", "")).replace("\n", " ").strip())
+    return rows
+
+
+def _markdown_table_from_data(table_data: dict[str, Any]) -> str:
+    rows = _table_matrix_from_data(table_data)
     if not rows:
         return ""
     width = max(len(row) for row in rows)
@@ -57,7 +62,35 @@ def _markdown_table_from_data(table_data: dict[str, Any]) -> str:
     return "\n".join("| " + " | ".join(row) + " |" for row in markdown_rows)
 
 
-def _normalize_docling_item(item: dict[str, Any]) -> ParsedElement | None:
+def _resolve_texts(refs: list[Any], ref_map: dict[str, dict[str, Any]]) -> list[str]:
+    texts: list[str] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        ref_value = ref.get("$ref")
+        if not isinstance(ref_value, str):
+            continue
+        item = ref_map.get(ref_value)
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _looks_like_table_note(text: str) -> bool:
+    compact = "".join(text.split())
+    if not compact:
+        return True
+    note_markers = ("单位：", "币种：", "注：", "说明：", "金额单位：")
+    return compact.startswith(note_markers)
+
+
+def _normalize_docling_item(
+    item: dict[str, Any],
+    ref_map: dict[str, dict[str, Any]],
+) -> ParsedElement | None:
     ref = str(item.get("self_ref", ""))
     element_id = ref.split("/")[-1] if ref else ""
     provenance = item.get("prov") or []
@@ -79,9 +112,22 @@ def _normalize_docling_item(item: dict[str, Any]) -> ParsedElement | None:
 
     if "data" in item:
         kind = "table"
-        text = _markdown_table_from_data(item.get("data") or {})
+        table_data = item.get("data") or {}
+        matrix = _table_matrix_from_data(table_data)
+        text = _markdown_table_from_data(table_data)
+        caption_texts = _resolve_texts(item.get("captions") or [], ref_map)
+        footnote_texts = _resolve_texts(item.get("footnotes") or [], ref_map)
+        title = next((caption for caption in caption_texts if not _looks_like_table_note(caption)), "")
+        note_texts = footnote_texts + [
+            caption
+            for caption in caption_texts
+            if caption != title
+        ]
 
-    if not text:
+    if kind == "table":
+        if not matrix and not text:
+            return None
+    elif not text:
         return None
 
     element: ParsedElement = {
@@ -94,6 +140,10 @@ def _normalize_docling_item(item: dict[str, Any]) -> ParsedElement | None:
     }
     if level is not None:
         element["level"] = level
+    if kind == "table":
+        element["matrix"] = matrix
+        element["title"] = title
+        element["footnotes_text"] = "\n".join(note_texts).strip()
     return element
 
 
@@ -153,7 +203,7 @@ def _collect_body_elements(raw_doc: dict[str, Any]) -> list[ParsedElement]:
             if resolved is None:
                 continue
             if "data" in resolved or "text" in resolved:
-                normalized = _normalize_docling_item(resolved)
+                normalized = _normalize_docling_item(resolved, ref_map)
                 if normalized is not None:
                     elements.append(normalized)
                 continue

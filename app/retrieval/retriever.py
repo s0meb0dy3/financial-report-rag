@@ -13,6 +13,9 @@ from app.retrieval.vector_store import ChromaVectorStore, VectorStore
 DEFAULT_EMBEDDING_MODEL = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_EMBEDDING_BATCH_SIZE = 200
+MAX_EMBEDDING_INPUT_CHARS = 6000
+EMBEDDING_HEAD_CHARS = 3500
+EMBEDDING_TAIL_CHARS = 2000
 
 
 class RetrieverPort(Protocol):
@@ -94,6 +97,38 @@ class ChromaRetriever:
                 f"body_preview={preview!r}"
             ) from exc
 
+    @staticmethod
+    def _embedding_input_for_chunk(chunk: dict[str, Any]) -> str:
+        text = str(chunk.get("embedding_text") or chunk.get("text", ""))
+        if len(text) <= MAX_EMBEDDING_INPUT_CHARS:
+            return text
+
+        page_start = chunk.get("page_start")
+        page_end = chunk.get("page_end")
+        page_label = ""
+        if isinstance(page_start, int) and isinstance(page_end, int):
+            page_label = f"pages: {page_start}-{page_end}\n"
+        section_path = chunk.get("section_path", [])
+        section_text = " / ".join(section_path) if isinstance(section_path, list) else ""
+        prefix = ""
+        if chunk.get("chunk_type") == "table":
+            prefix = "table chunk\n"
+        if section_text:
+            prefix += f"section: {section_text}\n"
+        prefix += page_label
+
+        remaining_budget = max(
+            0,
+            MAX_EMBEDDING_INPUT_CHARS - len(prefix) - len("\n...\n"),
+        )
+        head_budget = min(EMBEDDING_HEAD_CHARS, remaining_budget)
+        tail_budget = min(EMBEDDING_TAIL_CHARS, max(0, remaining_budget - head_budget))
+        if tail_budget == 0:
+            return prefix + text[:remaining_budget]
+        head = text[:head_budget]
+        tail = text[-tail_budget:]
+        return prefix + head + "\n...\n" + tail
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -112,7 +147,7 @@ class ChromaRetriever:
         embedded_chunks = []
         for start in range(0, len(chunks), self.batch_size):
             batch = chunks[start : start + self.batch_size]
-            embeddings = self.embed([chunk["text"] for chunk in batch])
+            embeddings = self.embed([self._embedding_input_for_chunk(chunk) for chunk in batch])
             embedded_chunks.extend(
                 {**chunk, "embedding": embedding}
                 for chunk, embedding in zip(batch, embeddings, strict=True)

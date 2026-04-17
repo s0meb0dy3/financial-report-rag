@@ -225,5 +225,18 @@ class StructuredDoclingChunker:
             "text": text,
             "provenance": provenance,
             "bbox_refs": bbox_refs,
-            "element_ids": [str(element.get("element_id", "")) for element in elements if element.get("element_id")],
+            "element_ids": self._element_ids(elements),
         }
+
+    @staticmethod
+    def _element_ids(elements: list[ParsedElement]) -> list[str]:
+        element_ids: list[str] = []
+        for element in elements:
+            source_ids = element.get("source_element_ids")
+            if isinstance(source_ids, list):
+                element_ids.extend(str(item) for item in source_ids if item)
+                continue
+            element_id = element.get("element_id")
+            if element_id:
+                element_ids.append(str(element_id))
+        return element_ids

@@ -105,13 +105,24 @@ class SingleAgentRuntime:
         seen = set()
         citations = []
         for trace in tool_traces:
-            if trace.tool_name != "search_reports":
-                continue
-            for item in trace.output.get("results", []):
+            items = []
+            if trace.tool_name == "search_reports":
+                items = trace.output.get("results", [])
+            elif trace.tool_name == "search_tables":
+                items = trace.output.get("tables", [])
+            elif trace.tool_name == "extract_table":
+                table = trace.output.get("table")
+                items = [table] if isinstance(table, dict) else []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                page = item.get("page")
+                if page is None:
+                    page = item.get("page_start")
                 citation = Citation(
-                    doc_id=item.get("doc_id", ""),
+                    doc_id=item.get("doc_id", trace.output.get("doc_id", "")),
                     doc_name=item.get("doc_name", ""),
-                    page=item.get("page"),
+                    page=page,
                 )
                 key = (citation.doc_id, citation.doc_name, citation.page)
                 if key in seen:

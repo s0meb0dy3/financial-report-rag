@@ -1,8 +1,10 @@
 from app.tools.base import RegisteredTool, ToolRegistry, ToolSpec
 from app.tools.financial_reports import (
     build_default_tool_registry,
+    build_extract_table_tool,
     build_list_reports_tool,
     build_search_reports_tool,
+    build_search_tables_tool,
 )
 
 __all__ = [
@@ -10,6 +12,8 @@ __all__ = [
     "ToolRegistry",
     "ToolSpec",
     "build_default_tool_registry",
+    "build_extract_table_tool",
     "build_list_reports_tool",
     "build_search_reports_tool",
+    "build_search_tables_tool",
 ]

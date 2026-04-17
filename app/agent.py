@@ -37,7 +37,8 @@ load_dotenv()
 DEFAULT_CHAT_MODEL = "qwen/qwen3.6-plus:free"
 DEFAULT_SYSTEM_MESSAGE = (
     "你是一个财报问答助手。"
-    "你可以调用 search_reports 工具检索资料。"
+    "对于表格和指标问题，优先调用 search_tables 找候选表，再在需要时调用 extract_table 读取完整表格。"
+    "如果表格工具找不到，再调用 search_reports 工具检索资料。"
     "回答时只依据检索到的证据作答；如果证据不足，就明确回答“我不知道”。"
     "给出结论时尽量带上文档名和页码。"
 )
@@ -117,12 +118,10 @@ class AgentLoop:
         top_k: int,
         doc_id: Optional[str],
     ) -> dict[str, Any]:
-        if tool_name != "search_reports":
-            return arguments
-
         prepared = dict(arguments)
-        prepared.setdefault("top_k", top_k)
-        if doc_id is not None:
+        if tool_name == "search_reports":
+            prepared.setdefault("top_k", top_k)
+        if tool_name in {"search_reports", "search_tables", "extract_table"} and doc_id is not None:
             prepared.setdefault("doc_id", doc_id)
         return prepared
 

@@ -191,6 +191,7 @@ class IngestPdfTests(unittest.TestCase):
                     "element_id": "table-1",
                     "kind": "table",
                     "text": "| 指标 | 数值 |\n| --- | --- |\n| 发电量 | 100 |",
+                    "matrix": [["指标", "数值"], ["发电量", "100"]],
                     "page_start": 2,
                     "page_end": 2,
                     "provenance": [{"page": 2}],
@@ -200,6 +201,7 @@ class IngestPdfTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "chunks.json"
+            tables_path = output_path.parent / "tables.json"
 
             with patch("app.ingestion.service.DoclingPdfParser") as parser_cls:
                 parser_cls.return_value.parse.side_effect = [first_doc, second_doc]
@@ -207,8 +209,10 @@ class IngestPdfTests(unittest.TestCase):
 
             self.assertGreaterEqual(len(chunks), 3)
             self.assertTrue(output_path.exists())
+            self.assertTrue(tables_path.exists())
 
             saved_chunks = json.loads(output_path.read_text(encoding="utf-8"))
+            saved_tables = json.loads(tables_path.read_text(encoding="utf-8"))
 
             self.assertEqual(saved_chunks, chunks)
             self.assertEqual(saved_chunks[0]["page_start"], 1)
@@ -220,6 +224,14 @@ class IngestPdfTests(unittest.TestCase):
             self.assertEqual({chunk["doc_name"] for chunk in saved_chunks}, {PDF_PATH.name, SECOND_PDF_PATH.name})
             self.assertTrue(
                 all(Path(chunk["source_path"]).name == chunk["doc_name"] for chunk in saved_chunks)
+            )
+            self.assertEqual(len(saved_tables), 1)
+            self.assertEqual(saved_tables[0]["table_id"], "doc-b-logical-table-1")
+            self.assertEqual(saved_tables[0]["preview_matrix"], [["指标", "数值"], ["发电量", "100"]])
+            self.assertEqual(saved_tables[0]["matrix"], [["指标", "数值"], ["发电量", "100"]])
+            self.assertEqual(
+                saved_tables[0]["fragments"],
+                [{"source_element_id": "table-1", "page_start": 2, "page_end": 2, "row_count": 2}],
             )
 
     def test_ingestion_service_writes_docling_json_markdown_and_chunks(self) -> None:
@@ -240,6 +252,16 @@ class IngestPdfTests(unittest.TestCase):
                     "provenance": [{"page": 1}],
                 },
                 {
+                    "element_id": "table-1",
+                    "kind": "table",
+                    "text": "| 项目 | 2024年 |\n| --- | --- |\n| 营业总收入 | 100 |",
+                    "title": "主要会计数据",
+                    "matrix": [["项目", "2024年"], ["营业总收入", "100"]],
+                    "page_start": 2,
+                    "page_end": 2,
+                    "provenance": [{"page": 2}],
+                },
+                {
                     "element_id": "para-1",
                     "kind": "paragraph",
                     "text": "收入增长",
@@ -258,6 +280,7 @@ class IngestPdfTests(unittest.TestCase):
                 chunks_path=Path(temp_dir) / "chunks.json",
                 docling_json_dir=Path(temp_dir) / "docling",
                 markdown_dir=Path(temp_dir) / "markdown",
+                tables_path=Path(temp_dir) / "tables.json",
             )
 
             chunks = service.ingest_pdfs([Path("/tmp/doc-c.pdf")], artifacts)
@@ -265,11 +288,179 @@ class IngestPdfTests(unittest.TestCase):
             saved_chunks = json.loads(artifacts.chunks_path.read_text(encoding="utf-8"))
             saved_doc = json.loads((artifacts.docling_json_dir / "doc-c.json").read_text(encoding="utf-8"))
             saved_markdown = (artifacts.markdown_dir / "doc-c.md").read_text(encoding="utf-8")
+            saved_tables = json.loads(artifacts.tables_path.read_text(encoding="utf-8"))
 
         parser.parse.assert_called_once()
         self.assertEqual(saved_chunks, chunks)
         self.assertEqual(saved_doc["schema_name"], "DoclingDocument")
         self.assertEqual(saved_markdown, "# 第一章\n\n收入增长")
+        self.assertEqual(saved_tables[0]["table_id"], "doc-c-logical-table-1")
+        self.assertEqual(saved_tables[0]["statement_type_guess"], "key_metrics")
+        self.assertEqual(saved_tables[0]["title"], "主要会计数据")
+        self.assertEqual(saved_tables[0]["row_count"], 2)
+        self.assertEqual(saved_tables[0]["column_count"], 2)
+
+    def test_ingestion_service_merges_cross_page_tables_into_single_logical_table(self) -> None:
+        parsed_document = ParsedDocument(
+            doc_id="doc-e",
+            doc_name="doc-e.pdf",
+            source_path="/tmp/doc-e.pdf",
+            raw_doc={"schema_name": "DoclingDocument"},
+            elements=[
+                {
+                    "element_id": "heading-1",
+                    "kind": "heading",
+                    "text": "母公司资产负债表",
+                    "level": 1,
+                    "page_start": 61,
+                    "page_end": 61,
+                    "provenance": [{"page": 61}],
+                },
+                {
+                    "element_id": "table-94",
+                    "kind": "table",
+                    "title": "母公司资产负债表",
+                    "text": "| 项目 | 附注 | 2024年12月31日 | 2023年12月31日 |\n| --- | --- | --- | --- |\n| 流动资产： |  |  |  |\n| 货币资金 |  | 77 | 72 |",
+                    "matrix": [
+                        ["项目", "附注", "2024年12月31日", "2023年12月31日"],
+                        ["流动资产：", "", "", ""],
+                        ["货币资金", "", "77", "72"],
+                    ],
+                    "page_start": 61,
+                    "page_end": 61,
+                    "provenance": [{"page": 61}],
+                },
+                {
+                    "element_id": "table-95",
+                    "kind": "table",
+                    "title": "母公司资产负债表",
+                    "text": "| 项目 | 2024年12月31日 | 2023年12月31日 |\n| --- | --- | --- |\n| 项目 | 2024年12月31日 | 2023年12月31日 |\n| 无形资产 | 10 | 9 |",
+                    "matrix": [
+                        ["项目", "2024年12月31日", "2023年12月31日"],
+                        ["无形资产", "10", "9"],
+                    ],
+                    "page_start": 62,
+                    "page_end": 62,
+                    "provenance": [{"page": 62}],
+                },
+                {
+                    "element_id": "table-96",
+                    "kind": "table",
+                    "title": "母公司资产负债表",
+                    "text": "| 项目 | 2024年12月31日 | 2023年12月31日 |\n| --- | --- | --- |\n| 项目 | 2024年12月31日 | 2023年12月31日 |\n| 负债和所有者权益总计 | 180 | 171 |",
+                    "matrix": [
+                        ["项目", "2024年12月31日", "2023年12月31日"],
+                        ["负债和所有者权益总计", "180", "171"],
+                    ],
+                    "page_start": 63,
+                    "page_end": 63,
+                    "provenance": [{"page": 63}],
+                },
+            ],
+        )
+        parser = MagicMock()
+        parser.parse.return_value = parsed_document
+        service = IngestionService(parser=parser, chunk_strategy=StructuredDoclingChunker(max_chars=200))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifacts = IngestionArtifacts(
+                chunks_path=Path(temp_dir) / "chunks.json",
+                docling_json_dir=Path(temp_dir) / "docling",
+                markdown_dir=Path(temp_dir) / "markdown",
+                tables_path=Path(temp_dir) / "tables.json",
+            )
+
+            chunks = service.ingest_pdfs([Path("/tmp/doc-e.pdf")], artifacts)
+            saved_tables = json.loads(artifacts.tables_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(saved_tables), 1)
+        logical_table = saved_tables[0]
+        self.assertEqual(logical_table["table_id"], "doc-e-logical-table-94")
+        self.assertEqual(logical_table["page_start"], 61)
+        self.assertEqual(logical_table["page_end"], 63)
+        self.assertEqual(
+            logical_table["fragments"],
+            [
+                {"source_element_id": "table-94", "page_start": 61, "page_end": 61, "row_count": 3},
+                {"source_element_id": "table-95", "page_start": 62, "page_end": 62, "row_count": 2},
+                {"source_element_id": "table-96", "page_start": 63, "page_end": 63, "row_count": 2},
+            ],
+        )
+        self.assertEqual(logical_table["matrix"][3], ["无形资产", "", "10", "9"])
+        self.assertEqual(logical_table["matrix"][-1], ["负债和所有者权益总计", "", "180", "171"])
+        table_chunks = [chunk for chunk in chunks if chunk["chunk_type"] == "table"]
+        self.assertEqual(len(table_chunks), 1)
+        self.assertEqual(table_chunks[0]["page_start"], 61)
+        self.assertEqual(table_chunks[0]["page_end"], 63)
+        self.assertEqual(table_chunks[0]["element_ids"], ["table-94", "table-95", "table-96"])
+
+    def test_ingestion_service_does_not_merge_non_contiguous_or_resectioned_tables(self) -> None:
+        parsed_document = ParsedDocument(
+            doc_id="doc-f",
+            doc_name="doc-f.pdf",
+            source_path="/tmp/doc-f.pdf",
+            raw_doc={"schema_name": "DoclingDocument"},
+            elements=[
+                {
+                    "element_id": "heading-1",
+                    "kind": "heading",
+                    "text": "母公司资产负债表",
+                    "level": 1,
+                    "page_start": 61,
+                    "page_end": 61,
+                    "provenance": [{"page": 61}],
+                },
+                {
+                    "element_id": "table-1",
+                    "kind": "table",
+                    "title": "母公司资产负债表",
+                    "text": "| 项目 | 金额 |\n| --- | --- |\n| 货币资金 | 77 |",
+                    "matrix": [["项目", "金额"], ["货币资金", "77"]],
+                    "page_start": 61,
+                    "page_end": 61,
+                    "provenance": [{"page": 61}],
+                },
+                {
+                    "element_id": "heading-2",
+                    "kind": "heading",
+                    "text": "其他说明",
+                    "level": 1,
+                    "page_start": 62,
+                    "page_end": 62,
+                    "provenance": [{"page": 62}],
+                },
+                {
+                    "element_id": "table-2",
+                    "kind": "table",
+                    "title": "母公司资产负债表",
+                    "text": "| 项目 | 金额 |\n| --- | --- |\n| 存货 | 51 |",
+                    "matrix": [["项目", "金额"], ["存货", "51"]],
+                    "page_start": 63,
+                    "page_end": 63,
+                    "provenance": [{"page": 63}],
+                },
+            ],
+        )
+        parser = MagicMock()
+        parser.parse.return_value = parsed_document
+        service = IngestionService(parser=parser, chunk_strategy=StructuredDoclingChunker(max_chars=200))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifacts = IngestionArtifacts(
+                chunks_path=Path(temp_dir) / "chunks.json",
+                docling_json_dir=Path(temp_dir) / "docling",
+                markdown_dir=Path(temp_dir) / "markdown",
+                tables_path=Path(temp_dir) / "tables.json",
+            )
+
+            service.ingest_pdfs([Path("/tmp/doc-f.pdf")], artifacts)
+            saved_tables = json.loads(artifacts.tables_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(saved_tables), 2)
+        self.assertEqual(
+            [item["table_id"] for item in saved_tables],
+            ["doc-f-logical-table-1", "doc-f-logical-table-2"],
+        )
 
     def test_ingestion_service_can_disable_markdown_export(self) -> None:
         parsed_document = ParsedDocument(

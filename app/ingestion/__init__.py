@@ -20,6 +20,7 @@ from app.ingestion.types import (
     DocumentParser,
     IngestionArtifacts,
     ParsedDocument,
+    TableRecord,
 )
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "IngestionService",
     "ParsedDocument",
     "StructuredDoclingChunker",
+    "TableRecord",
     "build_arg_parser",
     "build_doc_id",
     "chunk_page_text",

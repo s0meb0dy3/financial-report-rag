@@ -162,6 +162,88 @@ class AgentLoopTests(unittest.TestCase):
             doc_id="doc-b",
         )
 
+    def test_run_turn_prefers_table_tools_and_collects_table_citations(self) -> None:
+        search_tables_call = MagicMock()
+        search_tables_call.id = "call-1"
+        search_tables_call.function.name = "search_tables"
+        search_tables_call.function.arguments = json.dumps(
+            {"query": "经营活动产生的现金流量净额", "statement_type": "cash_flow"},
+            ensure_ascii=False,
+        )
+        extract_table_call = MagicMock()
+        extract_table_call.id = "call-2"
+        extract_table_call.function.name = "extract_table"
+        extract_table_call.function.arguments = json.dumps({"table_id": "doc-a-logical-table-1"}, ensure_ascii=False)
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            make_response(make_message(tool_calls=[search_tables_call])),
+            make_response(make_message(tool_calls=[extract_table_call])),
+            make_response(make_message(content="最终回答")),
+        ]
+
+        tool_registry = MagicMock()
+        tool_registry.get_definitions.return_value = [
+            {"type": "function", "function": {"name": "search_tables"}},
+            {"type": "function", "function": {"name": "extract_table"}},
+        ]
+        tool_registry.execute.side_effect = [
+            {
+                "doc_id": "doc-a",
+                "tables": [
+                    {
+                        "table_id": "doc-a-logical-table-1",
+                        "doc_id": "doc-a",
+                        "doc_name": "doc-a.pdf",
+                        "title": "合并现金流量表",
+                        "page_start": 10,
+                        "page_end": 11,
+                        "section_path": ["财务报告"],
+                        "preview_matrix": [["项目", "本期"], ["经营活动产生的现金流量净额", "100"]],
+                        "score": 4.2,
+                    }
+                ],
+            },
+            {
+                "doc_id": "doc-a",
+                "table": {
+                    "table_id": "doc-a-logical-table-1",
+                    "doc_id": "doc-a",
+                    "doc_name": "doc-a.pdf",
+                    "title": "合并现金流量表",
+                    "page_start": 10,
+                    "page_end": 11,
+                    "section_path": ["财务报告"],
+                    "matrix": [["项目", "本期"], ["经营活动产生的现金流量净额", "100"]],
+                    "footnotes_text": "",
+                    "fragments": [{"source_element_id": "table-1", "page_start": 10, "page_end": 11, "row_count": 2}],
+                    "row_count": 2,
+                    "column_count": 2,
+                },
+            },
+        ]
+        loop = AgentLoop(api_key="test-key", client=client, tool_registry=tool_registry, doc_id="doc-a")
+
+        result = loop.run_turn("经营活动产生的现金流量净额是多少？")
+
+        self.assertEqual(result["answer"], "最终回答")
+        self.assertEqual(
+            result["citations"],
+            [{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 10}],
+        )
+        self.assertEqual(
+            tool_registry.execute.call_args_list[0].args,
+            ("search_tables",),
+        )
+        self.assertEqual(
+            tool_registry.execute.call_args_list[0].kwargs,
+            {"query": "经营活动产生的现金流量净额", "statement_type": "cash_flow", "doc_id": "doc-a"},
+        )
+        self.assertEqual(
+            tool_registry.execute.call_args_list[1].kwargs,
+            {"table_id": "doc-a-logical-table-1", "doc_id": "doc-a"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
