@@ -162,11 +162,6 @@ def build_arg_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         help="Path to write the evaluation results JSON file",
     )
     parser.add_argument(
-        "--embeddings-path",
-        default="data/processed/embeddings.json",
-        help="Path to the embeddings JSON file",
-    )
-    parser.add_argument(
         "--top-k",
         type=int,
         default=3,

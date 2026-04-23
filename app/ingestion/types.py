@@ -5,7 +5,6 @@ from typing import Any, Protocol, TypeAlias
 
 ParsedElement: TypeAlias = dict[str, Any]
 ChunkRecord: TypeAlias = dict[str, Any]
-TableRecord: TypeAlias = dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -22,10 +21,6 @@ class ParsedDocument:
 @dataclass(slots=True)
 class IngestionArtifacts:
     chunks_path: Path
-    docling_json_dir: Path
-    markdown_dir: Path
-    tables_path: Path | None = None
-    export_markdown: bool = True
 
 
 class DocumentParser(Protocol):

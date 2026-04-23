@@ -6,8 +6,8 @@
 
 目前支持：
 
-- 基于 Docling 的 PDF 结构化解析
-- 基于结构信息的自定义分块
+- 基于 MinerU 精准 API 的 PDF 结构化解析
+- 基于 MinerU 结构块的自定义分块
 - OpenRouter embedding 生成
 - ChromaDB 本地持久化检索
 - `search_reports` / `list_reports` 工具
@@ -30,7 +30,7 @@ uv sync
 
 ## 配置
 
-复制 `.env.example` 为 `.env`，填写你的 OpenRouter key。
+复制 `.env.example` 为 `.env`，填写你的 OpenRouter key 和 MinerU token。
 
 ```env
 OPENROUTER_API_KEY=your-openrouter-api-key
@@ -39,6 +39,10 @@ EMBEDDING_MODEL=nvidia/llama-nemotron-embed-vl-1b-v2:free
 CHAT_MODEL=qwen/qwen3.6-plus:free
 CHROMA_PERSIST_DIR=data/chroma
 CHROMA_COLLECTION_NAME=financial-report-chunks
+MINERU_API_TOKEN=your-mineru-api-token
+MINERU_BASE_URL=https://mineru.net
+MINERU_MODEL_VERSION=vlm
+MINERU_LANGUAGE=ch
 ```
 
 ## 使用方式
@@ -56,13 +60,14 @@ uv run python main.py ingest
 默认会产出：
 
 - [`data/processed/chunks.json`](/Users/peteryao/projects/CaibaoAgent/data/processed/chunks.json)：正式索引输入
-- `data/processed/docling/*.json`：Docling 的 lossless JSON 真相源
-- `data/processed/markdown/*.md`：用于人工检查的 Markdown 调试产物
+- `data/processed/mineru/<doc_id>/result.zip`：MinerU 原始结果包
+- `data/processed/mineru/<doc_id>/content_list_v2.json`：主分块真相源
+- `data/processed/mineru/<doc_id>/full.md`：用于人工检查的 Markdown 调试产物
 
-如果不想导出 Markdown，可以传：
+如果想调整缓存目录、强制重新解析或修改正文 chunk 大小，可以传：
 
 ```bash
-uv run python main.py ingest --disable-markdown-export
+uv run python main.py ingest --artifact-dir data/processed/mineru --force-parse --max-chars 1000
 ```
 
 3. 建立向量索引
@@ -96,7 +101,7 @@ uv run python main.py eval
 ## 当前流程
 
 ```text
-PDFs -> Docling JSON (+ optional Markdown) -> chunks.json -> OpenRouter embeddings -> ChromaDB -> search_reports -> agent loop -> answer -> eval
+PDFs -> MinerU precision API -> content_list_v2.json (+ full.md / result.zip) -> chunks.json -> OpenRouter embeddings -> ChromaDB -> search_reports -> agent loop -> answer -> eval
 ```
 
 `chat` 主链路可以再理解成：
@@ -122,8 +127,8 @@ flowchart TD
     A --> D["chat"]
     A --> E["eval"]
 
-    B --> B1["DoclingPdfParser"]
-    B1 --> B2["StructuredDoclingChunker"]
+    B --> B1["MineruPdfParser"]
+    B1 --> B2["StructuredMineruChunker"]
     B2 --> B3["chunks.json"]
 
     C --> C1["ChromaRetriever<br/>OpenRouter Embedding"]
@@ -151,7 +156,7 @@ flowchart TD
 - [`main.py`](/Users/peteryao/projects/CaibaoAgent/main.py)：唯一总入口，统一分发 `chat / ingest / index / eval`
 - [`app/agent.py`](/Users/peteryao/projects/CaibaoAgent/app/agent.py)：聊天入口、`AgentLoop`、兼容 `Agent.ask()` 的服务层
 - [`app/eval.py`](/Users/peteryao/projects/CaibaoAgent/app/eval.py)：评测逻辑与评测 CLI
-- [`app/ingestion/`](/Users/peteryao/projects/CaibaoAgent/app/ingestion)：PDF 解析与切块
+- [`app/ingestion/`](/Users/peteryao/projects/CaibaoAgent/app/ingestion)：MinerU 解析缓存、PDF 结构化分块与 ingest CLI
 - [`app/retrieval/`](/Users/peteryao/projects/CaibaoAgent/app/retrieval)：embedding、索引与检索
 - [`app/tools/`](/Users/peteryao/projects/CaibaoAgent/app/tools)：工具定义与工具注册
 - [`app/runtime/`](/Users/peteryao/projects/CaibaoAgent/app/runtime)：LLM 调用与单 agent 运行时
