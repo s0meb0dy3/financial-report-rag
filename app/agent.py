@@ -128,6 +128,7 @@ class AgentLoop:
     def run_turn(
         self,
         question: str,
+        session_id: Optional[str] = None,
         top_k: Optional[int] = None,
         doc_id: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -135,6 +136,7 @@ class AgentLoop:
         resolved_doc_id = self.doc_id if doc_id is None else doc_id
         result = self._runtime.run_turn(
             question,
+            session_id=session_id,
             tool_argument_preparer=lambda tool_name, arguments: self._prepare_tool_arguments(
                 tool_name,
                 arguments,

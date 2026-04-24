@@ -90,13 +90,51 @@ uv run python main.py chat
 uv run python main.py chat --top-k 5 --doc-id moutai
 ```
 
-5. 跑固定问题集评测
+5. 启动基础 API 服务
+
+```bash
+uv run uvicorn app.api:app --reload
+```
+
+常用接口：
+
+- `GET /health`：健康检查
+- `GET /documents`：列出已索引财报
+- `POST /chat`：发起问答
+
+`/chat` 请求示例：
+
+```json
+{
+  "question": "贵州茅台 2024 年营业总收入是多少？",
+  "session_id": "web-demo",
+  "top_k": 5,
+  "doc_id": "moutai",
+  "include_tool_results": false
+}
+```
+
+服务启动后可以访问 `http://127.0.0.1:8000/docs` 查看 Swagger 文档。
+
+6. 跑固定问题集评测
 
 ```bash
 uv run python main.py eval
 ```
 
 评测问题集在 [`data/eval/questions.json`](/Users/peteryao/projects/CaibaoAgent/data/eval/questions.json)，结果默认写到 [`data/eval/results/latest.json`](/Users/peteryao/projects/CaibaoAgent/data/eval/results/latest.json)。
+
+## 前端原型
+
+当前仓库包含一个独立的 Vite + React + TypeScript + Tailwind 前端原型，位于 [`frontend/`](/Users/peteryao/projects/CaibaoAgent/frontend)。
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+默认访问 `http://127.0.0.1:5173/`。第一版界面先使用本地 mock 数据，已经包含会话列表、新建对话、文档选择、聊天区、引用来源和工具轨迹面板。后续可以把 `/chat` 和 `/documents` 接到 FastAPI。
 
 ## 当前流程
 
@@ -156,6 +194,7 @@ flowchart TD
 - [`main.py`](/Users/peteryao/projects/CaibaoAgent/main.py)：唯一总入口，统一分发 `chat / ingest / index / eval`
 - [`app/agent.py`](/Users/peteryao/projects/CaibaoAgent/app/agent.py)：聊天入口、`AgentLoop`、兼容 `Agent.ask()` 的服务层
 - [`app/eval.py`](/Users/peteryao/projects/CaibaoAgent/app/eval.py)：评测逻辑与评测 CLI
+- [`app/api.py`](/Users/peteryao/projects/CaibaoAgent/app/api.py)：基础 FastAPI 服务，封装文档列表和问答接口
 - [`app/ingestion/`](/Users/peteryao/projects/CaibaoAgent/app/ingestion)：MinerU 解析缓存、PDF 结构化分块与 ingest CLI
 - [`app/retrieval/`](/Users/peteryao/projects/CaibaoAgent/app/retrieval)：embedding、索引与检索
 - [`app/tools/`](/Users/peteryao/projects/CaibaoAgent/app/tools)：工具定义与工具注册
