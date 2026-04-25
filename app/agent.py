@@ -15,7 +15,7 @@ from app.retrieval import (
     LLMQueryRewriter,
 )
 from app.runtime import OpenAIChatClient, SingleAgentRuntime
-from app.session import InMemorySessionStore
+from app.session import InMemorySessionStore, SessionStore
 from app.shared import (
     ANSI_CYAN,
     ANSI_GRAY,
@@ -52,6 +52,7 @@ class AgentLoop:
         cls,
         top_k: int = 3,
         doc_id: Optional[str] = None,
+        session_store: SessionStore | None = None,
     ) -> "AgentLoop":
         return cls(
             api_key=os.environ.get("OPENROUTER_API_KEY", ""),
@@ -59,6 +60,7 @@ class AgentLoop:
             chat_model=os.environ.get("CHAT_MODEL", DEFAULT_CHAT_MODEL),
             top_k=top_k,
             doc_id=doc_id,
+            session_store=session_store,
         )
 
     def __init__(
@@ -72,6 +74,7 @@ class AgentLoop:
         top_k: int = 3,
         doc_id: Optional[str] = None,
         max_tool_calls: int = MAX_TOOL_CALLS,
+        session_store: SessionStore | None = None,
     ):
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY is not set")
@@ -82,6 +85,7 @@ class AgentLoop:
         self.top_k = top_k
         self.doc_id = doc_id
         self.max_tool_calls = max_tool_calls
+        self.session_store = session_store or InMemorySessionStore()
         self._client = client
         self.retriever = retriever or HybridRetriever(
             dense_retriever=ChromaRetriever(
@@ -99,7 +103,7 @@ class AgentLoop:
         self._runtime = SingleAgentRuntime(
             llm_client=OpenAIChatClient(self.client, self.chat_model),
             tool_registry=self.tool_registry,
-            session_store=InMemorySessionStore(),
+            session_store=self.session_store,
             context_builder=ContextBuilder(system_prompt=DEFAULT_SYSTEM_MESSAGE),
             max_tool_calls=self.max_tool_calls,
         )
@@ -132,11 +136,12 @@ class AgentLoop:
         top_k: Optional[int] = None,
         doc_id: Optional[str] = None,
     ) -> dict[str, Any]:
+        active_session_id = session_id or "default"
         resolved_top_k = self.top_k if top_k is None else top_k
         resolved_doc_id = self.doc_id if doc_id is None else doc_id
         result = self._runtime.run_turn(
             question,
-            session_id=session_id,
+            session_id=active_session_id,
             tool_argument_preparer=lambda tool_name, arguments: self._prepare_tool_arguments(
                 tool_name,
                 arguments,
@@ -144,7 +149,7 @@ class AgentLoop:
                 doc_id=resolved_doc_id,
             ),
         )
-        return {
+        payload = {
             "answer": result.answer,
             "citations": [
                 {"doc_id": item.doc_id, "doc_name": item.doc_name, "page": item.page}
@@ -160,6 +165,51 @@ class AgentLoop:
                 for trace in result.tool_traces
             ],
         }
+        record_turn = getattr(self.session_store, "record_turn", None)
+        if callable(record_turn):
+            record_turn(
+                active_session_id,
+                user_content=question,
+                assistant_content=payload["answer"],
+                citations=payload["citations"],
+                tool_results=payload["tool_results"],
+                doc_id=resolved_doc_id,
+            )
+        return payload
+
+    def run_turn_stream(
+        self,
+        question: str,
+        session_id: Optional[str] = None,
+        top_k: Optional[int] = None,
+        doc_id: Optional[str] = None,
+    ):
+        active_session_id = session_id or "default"
+        resolved_top_k = self.top_k if top_k is None else top_k
+        resolved_doc_id = self.doc_id if doc_id is None else doc_id
+        for event in self._runtime.run_turn_stream(
+            question,
+            session_id=active_session_id,
+            tool_argument_preparer=lambda tool_name, arguments: self._prepare_tool_arguments(
+                tool_name,
+                arguments,
+                top_k=resolved_top_k,
+                doc_id=resolved_doc_id,
+            ),
+        ):
+            if event.get("event") == "final":
+                final_payload = event.get("data")
+                record_turn = getattr(self.session_store, "record_turn", None)
+                if callable(record_turn) and isinstance(final_payload, dict):
+                    record_turn(
+                        active_session_id,
+                        user_content=question,
+                        assistant_content=final_payload.get("answer", ""),
+                        citations=final_payload.get("citations", []),
+                        tool_results=final_payload.get("tool_results", []),
+                        doc_id=resolved_doc_id,
+                    )
+            yield event
 
     def close(self) -> None:
         if self._client is not None:

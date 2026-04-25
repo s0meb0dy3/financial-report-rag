@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 data/processed/
 data/chroma/
+data/sessions.sqlite3
+data/sessions.sqlite3-*
 data/eval/results/
 logs/
 *.pdf

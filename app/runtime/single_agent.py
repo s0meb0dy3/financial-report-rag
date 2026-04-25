@@ -100,6 +100,135 @@ class SingleAgentRuntime:
             updated_state=updated_state,
         )
 
+    def run_turn_stream(
+        self,
+        user_text: str,
+        session_id: str | None = None,
+        tool_argument_preparer=None,
+    ):
+        active_session_id = session_id or "default"
+        state = self.session_store.load(active_session_id)
+        messages = self.context_builder.build(state, user_text)
+        tool_traces: list[ToolTrace] = []
+        tool_call_count = 0
+
+        yield {"event": "session", "data": {"session_id": active_session_id}}
+
+        while tool_call_count < self.max_tool_calls:
+            yield {"event": "status", "data": {"message": "生成工具计划"}}
+            assistant_message = yield from self._generate_assistant_stream(
+                messages,
+                tool_definitions=self.tool_registry.get_definitions(),
+            )
+            if not assistant_message.tool_calls:
+                updated_state = ConversationState(messages=[*messages, assistant_message])
+                self.session_store.save(active_session_id, updated_state)
+                yield {
+                    "event": "final",
+                    "data": self._turn_payload(
+                        assistant_message.content,
+                        tool_traces,
+                    ),
+                }
+                return
+
+            messages.append(assistant_message)
+            for tool_call in assistant_message.tool_calls:
+                if tool_call_count >= self.max_tool_calls:
+                    break
+                execution_arguments = dict(tool_call.arguments)
+                if tool_argument_preparer is not None:
+                    execution_arguments = tool_argument_preparer(
+                        tool_call.tool_name,
+                        execution_arguments,
+                    )
+                yield {
+                    "event": "status",
+                    "data": {"message": f"调用工具 {tool_call.tool_name}"},
+                }
+                output = self.tool_registry.execute(tool_call.tool_name, **execution_arguments)
+                trace = ToolTrace(
+                    tool_name=tool_call.tool_name,
+                    arguments=execution_arguments,
+                    output=output,
+                    tool_call_id=tool_call.tool_call_id,
+                )
+                tool_traces.append(trace)
+                yield {
+                    "event": "tool_result",
+                    "data": self._tool_trace_payload(trace),
+                }
+                messages.append(
+                    ToolResultMessage(
+                        tool_name=tool_call.tool_name,
+                        tool_call_id=tool_call.tool_call_id,
+                        output=output,
+                    )
+                )
+                tool_call_count += 1
+
+        forced_messages = [
+            *messages,
+            UserMessage(
+                content="不要继续调用工具。请基于已有证据直接给出最终答案；如果证据不足，就回答“我不知道”。"
+            ),
+        ]
+        yield {"event": "status", "data": {"message": "生成最终答案"}}
+        forced_answer = yield from self._generate_assistant_stream(
+            forced_messages,
+            tool_definitions=None,
+        )
+        updated_state = ConversationState(messages=[*messages, forced_answer])
+        self.session_store.save(active_session_id, updated_state)
+        yield {
+            "event": "final",
+            "data": self._turn_payload(forced_answer.content, tool_traces),
+        }
+
+    def _generate_assistant_stream(self, messages: list, tool_definitions=None) -> AssistantMessage:
+        generate_stream = getattr(self.llm_client, "generate_stream", None)
+        if not callable(generate_stream):
+            assistant_message = self.llm_client.generate(messages, tool_definitions=tool_definitions)
+            if assistant_message.content:
+                yield {
+                    "event": "answer_delta",
+                    "data": {"content": assistant_message.content},
+                }
+            return assistant_message
+
+        final_message = None
+        for item in generate_stream(messages, tool_definitions=tool_definitions):
+            item_type = item.get("type")
+            if item_type == "content_delta":
+                yield {
+                    "event": "answer_delta",
+                    "data": {"content": item.get("content", "")},
+                }
+            elif item_type == "message":
+                final_message = item.get("message")
+        if not isinstance(final_message, AssistantMessage):
+            raise RuntimeError("Streaming LLM response did not include a final assistant message")
+        return final_message
+
+    @staticmethod
+    def _tool_trace_payload(trace: ToolTrace) -> dict:
+        return {
+            "tool_name": trace.tool_name,
+            "arguments": trace.arguments,
+            "output": trace.output,
+            "tool_call_id": trace.tool_call_id,
+        }
+
+    def _turn_payload(self, answer: str, tool_traces: list[ToolTrace]) -> dict:
+        return {
+            "answer": answer,
+            "citations": [
+                {"doc_id": item.doc_id, "doc_name": item.doc_name, "page": item.page}
+                for item in self._build_citations(tool_traces)
+            ],
+            "tool_results": [self._tool_trace_payload(trace) for trace in tool_traces],
+        }
+
     @staticmethod
     def _build_citations(tool_traces: list[ToolTrace]) -> list[Citation]:
         seen = set()
