@@ -5,11 +5,13 @@ import re
 import shutil
 import zipfile
 from collections import defaultdict
+from copy import deepcopy
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
 import httpx
+from pypdf import PdfReader, PdfWriter
 
 from app.ingestion.types import DocumentParser, ParsedDocument, ParsedElement
 
@@ -20,6 +22,7 @@ DEFAULT_MINERU_LANGUAGE = "ch"
 DEFAULT_MINERU_REQUEST_TIMEOUT_SECONDS = 120.0
 DEFAULT_MINERU_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_MINERU_POLL_TIMEOUT_SECONDS = 600.0
+DEFAULT_MINERU_MAX_PAGES_PER_REQUEST = 200
 _CONTINUATION_CUE_PATTERN = re.compile(r"(续表|continued)", re.IGNORECASE)
 _TABLE_ROW_PATTERN = re.compile(r"<tr\b[^>]*>.*?</tr>", re.IGNORECASE | re.DOTALL)
 
@@ -407,6 +410,9 @@ class MineruPdfParser:
             poll_timeout_seconds=float(
                 os.environ.get("MINERU_POLL_TIMEOUT_SECONDS", DEFAULT_MINERU_POLL_TIMEOUT_SECONDS)
             ),
+            max_pages_per_request=int(
+                os.environ.get("MINERU_MAX_PAGES_PER_REQUEST", DEFAULT_MINERU_MAX_PAGES_PER_REQUEST)
+            ),
             force_parse=force_parse,
             client=client,
         )
@@ -422,6 +428,7 @@ class MineruPdfParser:
         request_timeout: float = DEFAULT_MINERU_REQUEST_TIMEOUT_SECONDS,
         poll_interval_seconds: float = DEFAULT_MINERU_POLL_INTERVAL_SECONDS,
         poll_timeout_seconds: float = DEFAULT_MINERU_POLL_TIMEOUT_SECONDS,
+        max_pages_per_request: int = DEFAULT_MINERU_MAX_PAGES_PER_REQUEST,
         force_parse: bool = False,
         client: httpx.Client | None = None,
     ):
@@ -433,6 +440,7 @@ class MineruPdfParser:
         self.request_timeout = request_timeout
         self.poll_interval_seconds = max(1.0, poll_interval_seconds)
         self.poll_timeout_seconds = max(self.poll_interval_seconds, poll_timeout_seconds)
+        self.max_pages_per_request = max(1, int(max_pages_per_request))
         self.force_parse = force_parse
         self._client = client
         self._owns_client = client is None
@@ -488,6 +496,103 @@ class MineruPdfParser:
         except (FileNotFoundError, ValueError):
             return False
         return True
+
+    def _pdf_page_count(self, pdf_path: Path) -> int | None:
+        try:
+            return len(PdfReader(str(pdf_path)).pages)
+        except Exception:
+            return None
+
+    def _page_ranges(self, page_count: int) -> list[tuple[int, int]]:
+        return [
+            (start, min(start + self.max_pages_per_request - 1, page_count))
+            for start in range(1, page_count + 1, self.max_pages_per_request)
+        ]
+
+    def _part_doc_id(self, doc_id: str, part_index: int) -> str:
+        return f"{doc_id}-part-{part_index:03d}"
+
+    def _part_pdf_name(self, part_index: int, page_start: int, page_end: int) -> str:
+        return f"part-{part_index:03d}-pages-{page_start:03d}-{page_end:03d}.pdf"
+
+    def _build_split_manifest(
+        self,
+        pdf_path: Path,
+        doc_id: str,
+        artifact_dir: Path,
+        page_count: int,
+        page_ranges: list[tuple[int, int]],
+    ) -> dict[str, Any]:
+        split_dir = artifact_dir / "split_pdfs"
+        parts_dir = artifact_dir / "parts"
+        parts = [
+            {
+                "part_index": part_index,
+                "doc_id": self._part_doc_id(doc_id, part_index),
+                "page_start": page_start,
+                "page_end": page_end,
+                "pdf_path": str(split_dir / self._part_pdf_name(part_index, page_start, page_end)),
+                "artifact_dir": str(parts_dir / f"part-{part_index:03d}"),
+            }
+            for part_index, (page_start, page_end) in enumerate(page_ranges, start=1)
+        ]
+        return {
+            **self._build_manifest(pdf_path, doc_id),
+            "split": True,
+            "page_count": page_count,
+            "part_count": len(page_ranges),
+            "max_pages_per_request": self.max_pages_per_request,
+            "parts": parts,
+        }
+
+    def _split_cache_matches(self, artifact_dir: Path, expected_manifest: dict[str, Any]) -> bool:
+        manifest_path = self._manifest_path(artifact_dir)
+        if not manifest_path.exists():
+            return False
+        try:
+            existing_manifest = _load_json(manifest_path)
+        except (json.JSONDecodeError, OSError):
+            return False
+        for key, value in expected_manifest.items():
+            if existing_manifest.get(key) != value:
+                return False
+        return all(Path(part["pdf_path"]).exists() for part in expected_manifest["parts"])
+
+    def _write_split_pdfs(
+        self,
+        pdf_path: Path,
+        page_ranges: list[tuple[int, int]],
+        split_dir: Path,
+    ) -> None:
+        reader = PdfReader(str(pdf_path))
+        split_dir.mkdir(parents=True, exist_ok=True)
+        for part_index, (page_start, page_end) in enumerate(page_ranges, start=1):
+            writer = PdfWriter()
+            for page_index in range(page_start - 1, page_end):
+                writer.add_page(reader.pages[page_index])
+            part_path = split_dir / self._part_pdf_name(part_index, page_start, page_end)
+            with part_path.open("wb") as output_file:
+                writer.write(output_file)
+
+    def _prepare_split_artifacts(
+        self,
+        pdf_path: Path,
+        doc_id: str,
+        artifact_dir: Path,
+        page_count: int,
+        page_ranges: list[tuple[int, int]],
+    ) -> dict[str, Any]:
+        manifest = self._build_split_manifest(pdf_path, doc_id, artifact_dir, page_count, page_ranges)
+        if self.force_parse or not self._split_cache_matches(artifact_dir, manifest):
+            if artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            self._write_split_pdfs(pdf_path, page_ranges, artifact_dir / "split_pdfs")
+            self._manifest_path(artifact_dir).write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        return manifest
 
     def _request_upload_target(self, pdf_path: Path, doc_id: str) -> tuple[str, str]:
         response = self.client.post(
@@ -604,15 +709,14 @@ class MineruPdfParser:
                     elements.append(normalized)
         return elements
 
-    def parse(self, pdf_path: Path) -> ParsedDocument:
-        path = Path(pdf_path).resolve()
-        doc_id = build_doc_id(path)
-        manifest = self._build_manifest(path, doc_id)
-        artifact_dir = self._artifact_dir_for_doc(doc_id)
-
-        if self.force_parse or not self._cache_matches(artifact_dir, manifest):
-            self._fetch_and_cache(path, doc_id, artifact_dir, manifest)
-
+    def _build_parsed_document(
+        self,
+        *,
+        pdf_path: Path,
+        doc_id: str,
+        artifact_dir: Path,
+        page_count: int | None,
+    ) -> ParsedDocument:
         content_pages, content_path = _load_content_pages(artifact_dir)
         markdown_path = artifact_dir / "full.md"
         markdown = markdown_path.read_text(encoding="utf-8") if markdown_path.exists() else None
@@ -623,14 +727,18 @@ class MineruPdfParser:
 
         return ParsedDocument(
             doc_id=doc_id,
-            doc_name=path.name,
-            source_path=str(path),
+            doc_name=pdf_path.name,
+            source_path=str(pdf_path),
             raw_doc={
                 "parser": "mineru",
                 "artifact_dir": str(artifact_dir),
                 "manifest_path": str(self._manifest_path(artifact_dir)),
                 "content_list_path": str(content_path),
                 "result_zip_path": str(artifact_dir / "result.zip"),
+                "split": False,
+                "page_count": page_count,
+                "part_count": 1,
+                "max_pages_per_request": self.max_pages_per_request,
             },
             markdown=markdown,
             elements=elements,
@@ -638,6 +746,146 @@ class MineruPdfParser:
                 page_number: {"block_count": len(page_blocks)}
                 for page_number, page_blocks in enumerate(content_pages, start=1)
             },
+        )
+
+    def _offset_element_pages(
+        self,
+        element: ParsedElement,
+        *,
+        page_offset: int,
+        part_index: int,
+        element_index: int,
+    ) -> ParsedElement:
+        adjusted = deepcopy(element)
+        element_id = str(adjusted.get("element_id", "")).strip()
+        adjusted["element_id"] = (
+            f"part-{part_index:03d}-{element_id}"
+            if element_id
+            else f"part-{part_index:03d}-element-{element_index:06d}"
+        )
+        for key in ("page_start", "page_end"):
+            page_number = _safe_int(adjusted.get(key))
+            if page_number is not None:
+                adjusted[key] = page_number + page_offset
+        provenance = adjusted.get("provenance")
+        if isinstance(provenance, list):
+            for item in provenance:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("page", "page_no"):
+                    page_number = _safe_int(item.get(key))
+                    if page_number is not None:
+                        item[key] = page_number + page_offset
+        return adjusted
+
+    def _load_part_parse_result(
+        self,
+        *,
+        part_pdf_path: Path,
+        part_doc_id: str,
+        part_artifact_dir: Path,
+    ) -> tuple[list[list[dict[str, Any]]], Path, str | None, list[ParsedElement]]:
+        manifest = self._build_manifest(part_pdf_path, part_doc_id)
+        if self.force_parse or not self._cache_matches(part_artifact_dir, manifest):
+            self._fetch_and_cache(part_pdf_path, part_doc_id, part_artifact_dir, manifest)
+
+        content_pages, content_path = _load_content_pages(part_artifact_dir)
+        markdown_path = part_artifact_dir / "full.md"
+        markdown = markdown_path.read_text(encoding="utf-8") if markdown_path.exists() else None
+        elements = self._collect_elements(
+            content_pages,
+            legacy=content_path.name != "content_list_v2.json",
+        )
+        return content_pages, content_path, markdown, elements
+
+    def _parse_split_document(self, pdf_path: Path, doc_id: str, page_count: int) -> ParsedDocument:
+        artifact_dir = self._artifact_dir_for_doc(doc_id)
+        page_ranges = self._page_ranges(page_count)
+        manifest = self._prepare_split_artifacts(pdf_path, doc_id, artifact_dir, page_count, page_ranges)
+
+        combined_elements: list[ParsedElement] = []
+        combined_page_map: dict[int, dict[str, Any]] = {}
+        markdown_parts: list[str] = []
+        part_records: list[dict[str, Any]] = []
+
+        for part in manifest["parts"]:
+            part_index = int(part["part_index"])
+            page_start = int(part["page_start"])
+            page_end = int(part["page_end"])
+            page_offset = page_start - 1
+            part_pdf_path = Path(part["pdf_path"])
+            part_artifact_dir = Path(part["artifact_dir"])
+            content_pages, content_path, markdown, elements = self._load_part_parse_result(
+                part_pdf_path=part_pdf_path,
+                part_doc_id=str(part["doc_id"]),
+                part_artifact_dir=part_artifact_dir,
+            )
+
+            if markdown:
+                markdown_parts.append(markdown)
+            for local_page_number, blocks in enumerate(content_pages, start=1):
+                global_page_number = page_offset + local_page_number
+                combined_page_map[global_page_number] = {
+                    "block_count": len(blocks),
+                    "part_index": part_index,
+                }
+            for element_index, element in enumerate(elements, start=1):
+                combined_elements.append(
+                    self._offset_element_pages(
+                        element,
+                        page_offset=page_offset,
+                        part_index=part_index,
+                        element_index=element_index,
+                    )
+                )
+
+            part_records.append(
+                {
+                    **part,
+                    "content_list_path": str(content_path),
+                    "manifest_path": str(self._manifest_path(part_artifact_dir)),
+                    "result_zip_path": str(part_artifact_dir / "result.zip"),
+                }
+            )
+
+        raw_doc = {
+            "parser": "mineru",
+            "artifact_dir": str(artifact_dir),
+            "manifest_path": str(self._manifest_path(artifact_dir)),
+            "split": True,
+            "page_count": page_count,
+            "part_count": len(page_ranges),
+            "max_pages_per_request": self.max_pages_per_request,
+            "parts": part_records,
+        }
+        return ParsedDocument(
+            doc_id=doc_id,
+            doc_name=pdf_path.name,
+            source_path=str(pdf_path),
+            raw_doc=raw_doc,
+            markdown="\n\n".join(markdown_parts) if markdown_parts else None,
+            elements=combined_elements,
+            page_map=combined_page_map,
+        )
+
+    def parse(self, pdf_path: Path) -> ParsedDocument:
+        path = Path(pdf_path).resolve()
+        doc_id = build_doc_id(path)
+        page_count = self._pdf_page_count(path)
+        if page_count is not None and page_count > self.max_pages_per_request:
+            return self._parse_split_document(path, doc_id, page_count)
+
+        manifest = self._build_manifest(path, doc_id)
+        artifact_dir = self._artifact_dir_for_doc(doc_id)
+
+        if self.force_parse or not self._cache_matches(artifact_dir, manifest):
+            self._fetch_and_cache(path, doc_id, artifact_dir, manifest)
+
+        return self._build_parsed_document(
+            pdf_path=path,
+            doc_id=doc_id,
+            artifact_dir=artifact_dir,
+            page_count=page_count,
         )
 
     def close(self) -> None:

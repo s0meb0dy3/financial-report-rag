@@ -6,25 +6,33 @@ import {
   ArrowUp,
   BarChart3,
   Bot,
+  Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   FileText,
   MessageSquarePlus,
   PanelRightOpen,
+  RefreshCw,
   Search,
-  Settings2,
   Sparkles,
   Trash2,
+  UploadCloud,
+  X,
 } from "lucide-react";
 import {
   createSession as createBackendSession,
+  deleteDocument as deleteBackendDocument,
   deleteSession as deleteBackendSession,
   getSession,
+  listDocumentJobs,
   listDocuments,
   listSessions,
   streamChat,
+  uploadDocument,
   updateSession as updateBackendSession,
   type CitationResponse,
+  type DocumentJobResponse,
   type DocumentResponse,
   type SessionDetailResponse,
   type SessionMessageResponse,
@@ -57,7 +65,7 @@ type Message = {
 type Session = {
   id: string;
   title: string;
-  document: string;
+  documents: string[];
   updatedAt: string;
   messages: Message[];
 };
@@ -65,13 +73,8 @@ type Session = {
 type DocumentRef = {
   id: string;
   name: string;
+  chunkCount: number | null;
 };
-
-const fallbackDocuments: DocumentRef[] = [
-  { id: "moutai", name: "贵州茅台 2024 年报" },
-  { id: "pingan", name: "中国平安 2024 年报" },
-  { id: "cmb", name: "招商银行 2024 年报" },
-];
 
 function makeId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
@@ -96,7 +99,39 @@ function mapDocument(document: DocumentResponse): DocumentRef {
   return {
     id: document.doc_id,
     name: document.doc_name,
+    chunkCount: document.chunk_count ?? null,
   };
+}
+
+function normalizeDocumentIds(documentIds: unknown, fallbackDocumentId: unknown = null) {
+  const candidates = Array.isArray(documentIds)
+    ? documentIds
+    : typeof fallbackDocumentId === "string"
+      ? [fallbackDocumentId]
+      : [];
+  const seen = new Set<string>();
+  return candidates.filter((item): item is string => {
+    if (typeof item !== "string") return false;
+    const value = item.trim();
+    if (!value || seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
+function validSessionDocuments(session: SessionSummaryResponse, documents: DocumentRef[]) {
+  const available = new Set(documents.map((document) => document.id));
+  return normalizeDocumentIds(session.doc_ids, session.doc_id).filter((docId) => available.has(docId));
+}
+
+function formatDocumentSelection(documentIds: string[], documents: DocumentRef[]) {
+  if (!documentIds.length) return "未选择文档";
+  const names = documentIds
+    .map((docId) => documents.find((document) => document.id === docId)?.name)
+    .filter((name): name is string => Boolean(name));
+  if (!names.length) return `${documentIds.length} 份文档`;
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, 2).join("、")}${names.length > 2 ? ` 等 ${names.length} 份` : ""}`;
 }
 
 function mapCitation(citation: CitationResponse): Citation {
@@ -269,15 +304,16 @@ function welcomeMessage(): Message {
   return {
     id: makeId("assistant"),
     role: "assistant",
-    content: "选择一份年报，然后开始提问。我会把答案、引用和检索路径放在同一个工作区里。",
+    content: "上传或选择一份年报，然后开始提问。我会把答案、引用和检索路径放在同一个工作区里。",
   };
 }
 
 function mapSessionSummary(session: SessionSummaryResponse, documents: DocumentRef[]): Session {
+  const selectedDocuments = validSessionDocuments(session, documents);
   return {
     id: session.id,
     title: session.title,
-    document: session.doc_id ?? documents[0]?.id ?? fallbackDocuments[0].id,
+    documents: selectedDocuments,
     updatedAt: formatUpdatedAt(session.updated_at),
     messages: [welcomeMessage()],
   };
@@ -306,17 +342,61 @@ function errorMessage(error: unknown, fallback = "请求失败") {
   return error instanceof Error ? error.message : fallback;
 }
 
+function isActiveDocumentJob(job: DocumentJobResponse) {
+  return job.status === "queued" || job.status === "running";
+}
+
+function jobStageLabel(stage: string) {
+  const labels: Record<string, string> = {
+    queued: "排队中",
+    parsing: "解析 PDF",
+    chunking: "生成 chunks",
+    embedding: "生成向量",
+    indexing: "写入索引",
+    done: "已完成",
+    failed: "失败",
+  };
+  return labels[stage] ?? stage;
+}
+
 function App() {
-  const [documents, setDocuments] = useState<DocumentRef[]>(fallbackDocuments);
+  const [documents, setDocuments] = useState<DocumentRef[]>([]);
+  const [documentJobs, setDocumentJobs] = useState<DocumentJobResponse[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [draft, setDraft] = useState("");
   const [showInspector, setShowInspector] = useState(true);
+  const [showDocumentManager, setShowDocumentManager] = useState(false);
+  const [showDocumentPicker, setShowDocumentPicker] = useState(false);
   const [hasEntered, setHasEntered] = useState(false);
   const [apiStatus, setApiStatus] = useState<"loading" | "connected" | "error">("loading");
   const [apiError, setApiError] = useState("");
+  const [documentError, setDocumentError] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const draftRef = useRef<HTMLTextAreaElement>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+
+  const refreshDocuments = useCallback(async () => {
+    const documentPayload = await listDocuments();
+    const loadedDocuments = documentPayload.documents.map(mapDocument);
+    setDocuments(loadedDocuments);
+    setSessions((current) =>
+      current.map((session) => ({
+        ...session,
+        documents: session.documents.filter((docId) =>
+          loadedDocuments.some((document) => document.id === docId),
+        ),
+      })),
+    );
+    return loadedDocuments;
+  }, []);
+
+  const refreshDocumentJobs = useCallback(async () => {
+    const payload = await listDocumentJobs();
+    setDocumentJobs(payload.jobs);
+    return payload.jobs;
+  }, []);
 
   const hydrateSession = useCallback(
     async (sessionId: string, availableDocuments = documents) => {
@@ -340,21 +420,23 @@ function App() {
         if (cancelled) return;
 
         const loadedDocuments = documentPayload.documents.map(mapDocument);
-        const availableDocuments = loadedDocuments.length ? loadedDocuments : fallbackDocuments;
-        setDocuments(availableDocuments);
+        setDocuments(loadedDocuments);
+        const jobsPayload = await listDocumentJobs();
+        if (cancelled) return;
+        setDocumentJobs(jobsPayload.jobs);
 
         const sessionPayload = await listSessions();
         let summaries = sessionPayload.sessions;
         if (!summaries.length) {
           const created = await createBackendSession({
             title: "新的财报对话",
-            doc_id: availableDocuments[0]?.id ?? null,
+            doc_ids: loadedDocuments[0] ? [loadedDocuments[0].id] : [],
           });
           summaries = [created];
         }
         if (cancelled) return;
 
-        const nextSessions = summaries.map((session) => mapSessionSummary(session, availableDocuments));
+        const nextSessions = summaries.map((session) => mapSessionSummary(session, loadedDocuments));
         setSessions(nextSessions);
         const firstSession = nextSessions[0];
         if (firstSession) {
@@ -364,7 +446,7 @@ function App() {
           setSessions((current) =>
             current.map((session) =>
               session.id === firstSession.id
-                ? mergeSessionDetail(detail, availableDocuments)
+                ? mergeSessionDetail(detail, loadedDocuments)
                 : session,
             ),
           );
@@ -377,7 +459,7 @@ function App() {
         const localSession: Session = {
           id: "local-preview",
           title: "FastAPI 未连接",
-          document: fallbackDocuments[0].id,
+          documents: [],
           updatedAt: "刚刚",
           messages: [
             {
@@ -406,18 +488,39 @@ function App() {
     [activeSessionId, sessions],
   );
 
-  const activeDocumentId = activeSession
-    ? documents.some((document) => document.id === activeSession.document)
-      ? activeSession.document
-      : documents[0]?.id ?? fallbackDocuments[0].id
-    : documents[0]?.id ?? fallbackDocuments[0].id;
-  const activeDocument = documents.find((document) => document.id === activeDocumentId);
+  const activeDocumentIds = activeSession
+    ? activeSession.documents.filter((docId) => documents.some((document) => document.id === docId))
+    : [];
+  const activeDocuments = activeDocumentIds
+    .map((docId) => documents.find((document) => document.id === docId))
+    .filter((document): document is DocumentRef => Boolean(document));
+  const activeDocumentLabel = formatDocumentSelection(activeDocumentIds, documents);
+  const hasActiveJob = documentJobs.some(isActiveDocumentJob);
   const visibleMessages = activeSession?.messages.length ? activeSession.messages : [welcomeMessage()];
   const lastAssistant = [...visibleMessages].reverse().find((message) => message.role === "assistant");
   const citations = lastAssistant?.citations ?? [];
   const tools = lastAssistant?.tools?.length
     ? lastAssistant.tools
     : [{ id: "idle-search", name: "search_reports", status: "idle" as const, detail: "等待下一次检索" }];
+
+  useEffect(() => {
+    if (!hasEntered || !documentJobs.some(isActiveDocumentJob)) return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const jobs = await refreshDocumentJobs();
+          if (!jobs.some(isActiveDocumentJob)) {
+            await refreshDocuments();
+          }
+          setApiStatus("connected");
+          setDocumentError("");
+        } catch (error) {
+          setDocumentError(errorMessage(error, "文档状态刷新失败"));
+        }
+      })();
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [documentJobs, hasEntered, refreshDocumentJobs, refreshDocuments]);
 
   async function selectSession(sessionId: string) {
     setActiveSessionId(sessionId);
@@ -436,7 +539,7 @@ function App() {
     try {
       const created = await createBackendSession({
         title: "新的财报对话",
-        doc_id: documents[0]?.id ?? null,
+        doc_ids: documents[0] ? [documents[0].id] : [],
       });
       const nextSession = mapSessionSummary(created, documents);
       setSessions((current) => [nextSession, ...current]);
@@ -468,23 +571,28 @@ function App() {
     }
   }
 
-  async function updateDocument(documentId: string) {
+  async function updateDocuments(documentIds: string[]) {
     if (!activeSession) return;
     const sessionId = activeSession.id;
+    const available = new Set(documents.map((document) => document.id));
+    const nextDocumentIds = normalizeDocumentIds(documentIds).filter((docId) => available.has(docId));
     setSessions((current) =>
       current.map((session) =>
-        session.id === sessionId ? { ...session, document: documentId, updatedAt: "刚刚" } : session,
+        session.id === sessionId ? { ...session, documents: nextDocumentIds, updatedAt: "刚刚" } : session,
       ),
     );
     try {
-      const updated = await updateBackendSession(sessionId, { doc_id: documentId });
+      const updated = await updateBackendSession(sessionId, {
+        doc_id: nextDocumentIds[0] ?? null,
+        doc_ids: nextDocumentIds,
+      });
       setSessions((current) =>
         current.map((session) =>
           session.id === sessionId
             ? {
                 ...session,
                 title: updated.title,
-                document: updated.doc_id ?? documentId,
+                documents: validSessionDocuments(updated, documents),
                 updatedAt: formatUpdatedAt(updated.updated_at),
               }
             : session,
@@ -498,10 +606,20 @@ function App() {
     }
   }
 
+  function toggleDocument(documentId: string) {
+    const selected = new Set(activeDocumentIds);
+    if (selected.has(documentId)) {
+      selected.delete(documentId);
+    } else {
+      selected.add(documentId);
+    }
+    void updateDocuments(Array.from(selected));
+  }
+
   async function sendMessage() {
     const session = activeSession;
     const question = (draftRef.current?.value ?? draft).trim();
-    if (!session || !question || isSending) return;
+    if (!session || !question || isSending || !activeDocumentIds.length) return;
 
     const sessionId = session.id;
     const userMessage: Message = { id: makeId("user"), role: "user", content: question };
@@ -555,7 +673,8 @@ function App() {
           question,
           session_id: sessionId,
           top_k: 5,
-          doc_id: activeDocumentId,
+          doc_id: activeDocumentIds[0] ?? null,
+          doc_ids: activeDocumentIds,
           include_tool_results: true,
         },
         (event) => {
@@ -605,6 +724,52 @@ function App() {
       }));
     } finally {
       setIsSending(false);
+    }
+  }
+
+  async function handleUploadFile(file: File | undefined) {
+    if (!file) return;
+    setShowDocumentManager(true);
+    setIsUploading(true);
+    setDocumentError("");
+    try {
+      const job = await uploadDocument(file);
+      setDocumentJobs((current) => [job, ...current.filter((item) => item.job_id !== job.job_id)]);
+      setApiStatus("connected");
+    } catch (error) {
+      setDocumentError(errorMessage(error, "上传失败"));
+      setApiStatus("error");
+    } finally {
+      setIsUploading(false);
+      if (uploadInputRef.current) {
+        uploadInputRef.current.value = "";
+      }
+    }
+  }
+
+  async function deleteManagedDocument(documentId: string) {
+    if (hasActiveJob) return;
+    const document = documents.find((item) => item.id === documentId);
+    const confirmed = window.confirm(`删除 ${document?.name ?? documentId} 的运行产物和索引？原 PDF 会保留。`);
+    if (!confirmed) return;
+    setDocumentError("");
+    try {
+      await deleteBackendDocument(documentId);
+      const loadedDocuments = await refreshDocuments();
+      const sessionPayload = await listSessions();
+      setSessions((current) =>
+        sessionPayload.sessions.map((session) => {
+          const existing = current.find((item) => item.id === session.id);
+          return {
+            ...mapSessionSummary(session, loadedDocuments),
+            messages: existing?.messages ?? [welcomeMessage()],
+          };
+        }),
+      );
+      setApiStatus("connected");
+    } catch (error) {
+      setDocumentError(errorMessage(error, "删除文档失败"));
+      setApiStatus("error");
     }
   }
 
@@ -729,7 +894,7 @@ function App() {
                     <strong>{session.title}</strong>
                     <small>
                       {session.updatedAt} ·{" "}
-                      {documents.find((doc) => doc.id === session.document)?.name ?? "未选择文档"}
+                      {formatDocumentSelection(session.documents, documents)}
                     </small>
                   </span>
                   {sessions.length > 1 && (
@@ -759,23 +924,57 @@ function App() {
               <p className="eyebrow">当前工作区</p>
               <h1>{activeSession?.title ?? "正在加载会话"}</h1>
             </div>
-            <div className="topbar-actions">
-              <label className="doc-select">
+          <div className="topbar-actions">
+              <div className="doc-picker">
                 <FileText size={16} />
-                <select
-                  value={activeDocumentId}
-                  onChange={(event) => void updateDocument(event.target.value)}
-                  disabled={!activeSession}
+                <button
+                  className="doc-picker-trigger"
+                  type="button"
+                  onClick={() => setShowDocumentPicker((value) => !value)}
+                  disabled={!activeSession || !documents.length}
                 >
-                  {documents.map((document) => (
-                    <option key={document.id} value={document.id}>
-                      {document.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button className="icon-button" aria-label="打开设置">
-                <Settings2 size={18} />
+                  <span>{documents.length ? activeDocumentLabel : "暂无文档"}</span>
+                  <small>{activeDocumentIds.length ? `${activeDocumentIds.length} 份` : "未选择"}</small>
+                  <ChevronDown size={15} />
+                </button>
+                {showDocumentPicker ? (
+                  <div className="doc-picker-menu">
+                    <div className="doc-picker-tools">
+                      <button type="button" onClick={() => void updateDocuments(documents.map((item) => item.id))}>
+                        全选
+                      </button>
+                      <button type="button" onClick={() => void updateDocuments([])}>
+                        清空
+                      </button>
+                    </div>
+                    <div className="doc-picker-list">
+                      {documents.map((document) => {
+                        const checked = activeDocumentIds.includes(document.id);
+                        return (
+                          <button
+                            type="button"
+                            className={`doc-picker-option ${checked ? "is-selected" : ""}`}
+                            key={document.id}
+                            onClick={() => toggleDocument(document.id)}
+                          >
+                            <span className="check-box">{checked ? <Check size={13} /> : null}</span>
+                            <span>
+                              <strong>{document.name}</strong>
+                              <small>{document.chunkCount ?? "?"} chunks</small>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <button
+                className="icon-button"
+                aria-label="管理文档"
+                onClick={() => setShowDocumentManager(true)}
+              >
+                <UploadCloud size={18} />
               </button>
               <button
                 className="icon-button lg:hidden"
@@ -789,11 +988,19 @@ function App() {
 
           <div className="query-strip">
             <Search size={17} />
-            <span>文档过滤：{activeDocument?.name}</span>
+            <span className="query-doc-filter">文档过滤：{activeDocumentLabel}</span>
+            <span className="divider" />
+            <span>{activeDocuments.reduce((sum, document) => sum + (document.chunkCount ?? 0), 0)} chunks</span>
             <span className="divider" />
             <span>Top K 预设：5</span>
             <span className="divider" />
             <span>{apiStatus === "connected" ? "API 已连接" : apiStatus === "loading" ? "API 连接中" : "API 异常"}</span>
+            {hasActiveJob ? (
+              <>
+                <span className="divider" />
+                <span>文档处理中</span>
+              </>
+            ) : null}
           </div>
 
           <div className="messages">
@@ -838,15 +1045,21 @@ function App() {
                     void sendMessage();
                   }
                 }}
-                placeholder={isSending ? "正在流式接收回答..." : "询问营收、利润、现金流、风险因素或指定页码证据..."}
+                placeholder={
+                  !activeDocumentIds.length
+                    ? "请先上传并选择至少一份年报..."
+                    : isSending
+                      ? "正在流式接收回答..."
+                      : "询问营收、利润、现金流、风险因素，或跨公司对比..."
+                }
                 rows={2}
-                disabled={isSending || !activeSession}
+                disabled={isSending || !activeSession || !activeDocumentIds.length}
               />
               <button
                 className="send-button"
                 type="submit"
                 aria-label="发送问题"
-                disabled={isSending || !activeSession}
+                disabled={isSending || !activeSession || !activeDocumentIds.length}
               >
                 <ArrowUp size={18} />
               </button>
@@ -921,6 +1134,106 @@ function App() {
             </section>
           </div>
         </aside>
+        {showDocumentManager ? (
+          <div className="document-manager-shell" role="dialog" aria-modal="true">
+            <div className="document-manager-backdrop" onClick={() => setShowDocumentManager(false)} />
+            <section className="document-manager">
+              <header className="document-manager-head">
+                <div>
+                  <p className="eyebrow">Documents</p>
+                  <h2>文档管理</h2>
+                </div>
+                <button
+                  className="icon-button"
+                  aria-label="关闭文档管理"
+                  onClick={() => setShowDocumentManager(false)}
+                >
+                  <X size={17} />
+                </button>
+              </header>
+
+              <div className="upload-zone">
+                <input
+                  ref={uploadInputRef}
+                  className="sr-only"
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  onChange={(event) => void handleUploadFile(event.target.files?.[0])}
+                />
+                <button
+                  className="upload-action"
+                  onClick={() => uploadInputRef.current?.click()}
+                  disabled={isUploading || hasActiveJob}
+                >
+                  <UploadCloud size={18} />
+                  {isUploading ? "上传中" : hasActiveJob ? "处理中" : "上传 PDF"}
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="刷新文档状态"
+                  onClick={() => {
+                    void refreshDocuments();
+                    void refreshDocumentJobs();
+                  }}
+                >
+                  <RefreshCw size={17} />
+                </button>
+              </div>
+
+              {documentError ? <div className="api-error">{documentError}</div> : null}
+
+              <section className="document-panel-block">
+                <div className="block-title">任务状态</div>
+                <div className="job-list">
+                  {documentJobs.length ? (
+                    documentJobs.slice(0, 5).map((job) => (
+                      <div className={`job-item ${job.status}`} key={job.job_id}>
+                        <span className={`dot ${job.status === "succeeded" ? "done" : isActiveDocumentJob(job) ? "running" : "idle"}`} />
+                        <span>
+                          <strong>{job.file_name}</strong>
+                          <small>
+                            {job.status === "failed"
+                              ? job.error || "处理失败"
+                              : `${jobStageLabel(job.stage)} · ${job.doc_name ?? "等待生成文档"}`}
+                          </small>
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="empty-copy">暂无处理任务。</p>
+                  )}
+                </div>
+              </section>
+
+              <section className="document-panel-block">
+                <div className="block-title">已索引文档</div>
+                <div className="managed-document-list">
+                  {documents.length ? (
+                    documents.map((document) => (
+                      <div className="managed-document" key={document.id}>
+                        <FileText size={17} />
+                        <span>
+                          <strong>{document.name}</strong>
+                          <small>{document.chunkCount ?? "?"} chunks</small>
+                        </span>
+                        <button
+                          className="managed-delete"
+                          onClick={() => void deleteManagedDocument(document.id)}
+                          disabled={hasActiveJob}
+                          aria-label={`删除 ${document.name}`}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="empty-copy">还没有索引文档。上传 PDF 后，完成解析即可在会话中选择。</p>
+                  )}
+                </div>
+              </section>
+            </section>
+          </div>
+        ) : null}
       </div>
     </main>
   );

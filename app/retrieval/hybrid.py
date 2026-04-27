@@ -67,7 +67,13 @@ def _matches_filters(evidence: Evidence, filters: Optional[dict[str, Any]]) -> b
     if not filters:
         return True
     for key, value in filters.items():
-        if getattr(evidence, key, None) != value:
+        candidate = getattr(evidence, key, None)
+        if isinstance(value, dict) and "$in" in value:
+            allowed = value.get("$in")
+            if not isinstance(allowed, list) or candidate not in allowed:
+                return False
+            continue
+        if candidate != value:
             return False
     return True
 
@@ -118,6 +124,10 @@ class LexicalRetriever:
         self.dense_retriever = dense_retriever
         self._documents: list[Evidence] | None = None
         self._bm25: BM25Okapi | None = None
+
+    def invalidate_cache(self) -> None:
+        self._documents = None
+        self._bm25 = None
 
     def _ensure_corpus(self) -> None:
         if self._documents is not None and self._bm25 is not None:
@@ -262,6 +272,27 @@ class HybridRetriever:
 
     def list_documents(self) -> list[DocumentRef]:
         return self.dense_retriever.list_documents()
+
+    def embed_chunks(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return self.dense_retriever.embed_chunks(chunks)
+
+    def upsert_embedded_chunks(self, embedded_chunks: list[dict[str, Any]]) -> None:
+        self.dense_retriever.upsert_embedded_chunks(embedded_chunks)
+        self.invalidate_cache()
+
+    def index_chunks(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        embedded_chunks = self.dense_retriever.index_chunks(chunks)
+        self.invalidate_cache()
+        return embedded_chunks
+
+    def delete_document(self, doc_id: str) -> None:
+        self.dense_retriever.delete_document(doc_id)
+        self.invalidate_cache()
+
+    def invalidate_cache(self) -> None:
+        invalidate = getattr(self.lexical_retriever, "invalidate_cache", None)
+        if callable(invalidate):
+            invalidate()
 
     def get_last_retrieval_queries(self) -> list[str]:
         return list(self._last_retrieval_queries)

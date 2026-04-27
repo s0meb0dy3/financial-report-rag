@@ -1,12 +1,14 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
+from pypdf import PdfReader, PdfWriter
 
 from app.ingestion import (
     IngestionArtifacts,
@@ -22,6 +24,14 @@ from app.ingestion import (
 
 def _write_pdf(path: Path) -> None:
     path.write_bytes(b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF")
+
+
+def _write_blank_pdf(path: Path, page_count: int) -> None:
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=72, height=72)
+    with path.open("wb") as output_file:
+        writer.write(output_file)
 
 
 def _build_zip_bytes(*, pages=None, legacy_items=None, markdown="# Demo", layout=None) -> bytes:
@@ -67,6 +77,13 @@ def _write_cached_artifacts(
 
 
 class MineruParserTests(unittest.TestCase):
+    def test_from_env_reads_mineru_page_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.dict(os.environ, {"MINERU_MAX_PAGES_PER_REQUEST": "123"}, clear=True):
+                parser = MineruPdfParser.from_env(artifact_root=Path(temp_dir) / "artifacts")
+
+        self.assertEqual(parser.max_pages_per_request, 123)
+
     def test_parser_downloads_and_extracts_precision_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -206,6 +223,152 @@ class MineruParserTests(unittest.TestCase):
             self.assertEqual(len(document.elements), 2)
             self.assertEqual(document.elements[0]["level"], 1)
             parser._client.post.assert_not_called()
+
+    def test_parser_keeps_pdf_at_page_limit_on_single_file_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_path = root / "two-page-report.pdf"
+            _write_blank_pdf(pdf_path, 2)
+            parser = MineruPdfParser(
+                artifact_root=root / "artifacts",
+                max_pages_per_request=2,
+            )
+            _write_cached_artifacts(
+                parser,
+                pdf_path,
+                pages=[
+                    [
+                        {
+                            "type": "paragraph",
+                            "content": {"paragraph_content": [{"type": "text", "content": "第一页"}]},
+                        }
+                    ],
+                    [
+                        {
+                            "type": "paragraph",
+                            "content": {"paragraph_content": [{"type": "text", "content": "第二页"}]},
+                        }
+                    ],
+                ],
+            )
+            parser._client = MagicMock()
+
+            document = parser.parse(pdf_path)
+
+            self.assertFalse(document.raw_doc["split"])
+            self.assertEqual(document.raw_doc["page_count"], 2)
+            self.assertEqual(document.raw_doc["part_count"], 1)
+            self.assertEqual([item["page_start"] for item in document.elements], [1, 2])
+            parser._client.post.assert_not_called()
+
+    def test_parser_page_ranges_respect_mineru_page_limit(self) -> None:
+        parser = MineruPdfParser(artifact_root=Path("/tmp/artifacts"), max_pages_per_request=200)
+
+        self.assertEqual(parser._page_ranges(201), [(1, 200), (201, 201)])
+        self.assertEqual(parser._page_ranges(400), [(1, 200), (201, 400)])
+        self.assertEqual(parser._page_ranges(401), [(1, 200), (201, 400), (401, 401)])
+
+    def test_parser_splits_large_pdf_and_merges_global_page_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_path = root / "large-report.pdf"
+            _write_blank_pdf(pdf_path, 201)
+            parser = MineruPdfParser(
+                artifact_root=root / "artifacts",
+                api_token="token",
+                max_pages_per_request=200,
+            )
+            fetch_calls = []
+
+            def fake_fetch(part_pdf_path: Path, part_doc_id: str, artifact_dir: Path, manifest: dict) -> None:
+                fetch_calls.append((Path(part_pdf_path).name, part_doc_id, artifact_dir))
+                part_page_count = len(PdfReader(str(part_pdf_path)).pages)
+                pages = [[] for _ in range(part_page_count)]
+                pages[0] = [
+                    {
+                        "type": "paragraph",
+                        "content": {
+                            "paragraph_content": [
+                                {"type": "text", "content": f"{part_doc_id} 第一页"}
+                            ]
+                        },
+                        "bbox": [1, 1, 2, 2],
+                    }
+                ]
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                (artifact_dir / "manifest.json").write_text(
+                    json.dumps(manifest, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                (artifact_dir / "content_list_v2.json").write_text(
+                    json.dumps(pages, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                (artifact_dir / "full.md").write_text(f"# {part_doc_id}", encoding="utf-8")
+
+            parser._fetch_and_cache = MagicMock(side_effect=fake_fetch)
+
+            document = parser.parse(pdf_path)
+
+            self.assertEqual([item[0] for item in fetch_calls], [
+                "part-001-pages-001-200.pdf",
+                "part-002-pages-201-201.pdf",
+            ])
+            self.assertEqual(document.doc_id, build_doc_id(pdf_path.resolve()))
+            self.assertEqual(document.doc_name, "large-report.pdf")
+            self.assertEqual(document.source_path, str(pdf_path.resolve()))
+            self.assertTrue(document.raw_doc["split"])
+            self.assertEqual(document.raw_doc["page_count"], 201)
+            self.assertEqual(document.raw_doc["part_count"], 2)
+            self.assertEqual([item["page_start"] for item in document.elements], [1, 201])
+            self.assertEqual([item["provenance"][0]["page"] for item in document.elements], [1, 201])
+            self.assertEqual(len({item["element_id"] for item in document.elements}), 2)
+            self.assertIn(201, document.page_map)
+            self.assertTrue((root / "artifacts" / document.doc_id / "split_pdfs").exists())
+
+    def test_parser_reuses_split_part_cache_without_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_path = root / "cached-large-report.pdf"
+            _write_blank_pdf(pdf_path, 201)
+            parser = MineruPdfParser(
+                artifact_root=root / "artifacts",
+                api_token="token",
+                max_pages_per_request=200,
+            )
+
+            def fake_fetch(part_pdf_path: Path, part_doc_id: str, artifact_dir: Path, manifest: dict) -> None:
+                part_page_count = len(PdfReader(str(part_pdf_path)).pages)
+                pages = [[] for _ in range(part_page_count)]
+                pages[0] = [
+                    {
+                        "type": "paragraph",
+                        "content": {
+                            "paragraph_content": [
+                                {"type": "text", "content": f"cached {part_doc_id}"}
+                            ]
+                        },
+                    }
+                ]
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                (artifact_dir / "manifest.json").write_text(
+                    json.dumps(manifest, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                (artifact_dir / "content_list_v2.json").write_text(
+                    json.dumps(pages, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+            parser._fetch_and_cache = MagicMock(side_effect=fake_fetch)
+            first = parser.parse(pdf_path)
+            parser._fetch_and_cache = MagicMock(side_effect=AssertionError("cache should be reused"))
+
+            second = parser.parse(pdf_path)
+
+            self.assertEqual([item["page_start"] for item in second.elements], [1, 201])
+            self.assertEqual(second.doc_id, first.doc_id)
+            parser._fetch_and_cache.assert_not_called()
 
     def test_force_parse_bypasses_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

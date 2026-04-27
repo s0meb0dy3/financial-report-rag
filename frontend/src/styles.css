@@ -230,7 +230,7 @@ button {
 }
 
 .topbar {
-  @apply flex min-h-[92px] items-center justify-between gap-4 border-b border-line bg-paper/90 px-6 py-5 backdrop-blur;
+  @apply relative z-30 flex min-h-[92px] items-center justify-between gap-4 border-b border-line bg-paper/95 px-6 py-5 backdrop-blur;
 }
 
 .topbar h1 {
@@ -241,12 +241,61 @@ button {
   @apply flex items-center gap-2;
 }
 
-.doc-select {
-  @apply flex h-10 items-center gap-2 rounded-md border border-line bg-white/70 px-3 text-sm text-ink transition duration-200 hover:bg-white;
+.doc-picker {
+  @apply relative flex h-10 min-w-[260px] items-center gap-2 rounded-md border border-line bg-white px-3 text-sm text-ink shadow-[0_1px_0_rgba(23,23,23,0.04)] transition duration-200 hover:bg-white;
+  width: min(520px, 42vw);
 }
 
-.doc-select select {
-  @apply max-w-[220px] bg-transparent outline-none;
+.doc-picker-trigger {
+  @apply flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left outline-none disabled:cursor-not-allowed disabled:opacity-55;
+}
+
+.doc-picker-trigger span {
+  @apply min-w-0 flex-1 truncate;
+}
+
+.doc-picker-trigger small {
+  @apply shrink-0 text-xs text-muted;
+}
+
+.doc-picker-menu {
+  @apply absolute right-0 top-[calc(100%+12px)] z-50 w-[min(420px,86vw)] rounded-md border border-line bg-white p-2 shadow-[0_24px_70px_rgba(30,28,24,0.18)];
+}
+
+.doc-picker-tools {
+  @apply mb-2 flex items-center justify-between border-b border-line pb-2;
+}
+
+.doc-picker-tools button {
+  @apply rounded-md px-2 py-1 text-xs font-semibold text-muted transition duration-200 hover:bg-[#f3efe7] hover:text-ink;
+}
+
+.doc-picker-list {
+  @apply max-h-[320px] space-y-1 overflow-y-auto;
+}
+
+.doc-picker-option {
+  @apply flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition duration-200 hover:bg-[#f3efe7];
+}
+
+.doc-picker-option.is-selected {
+  @apply bg-[#edf6f1];
+}
+
+.doc-picker-option > span:last-child {
+  @apply min-w-0 flex-1 overflow-hidden;
+}
+
+.doc-picker-option strong {
+  @apply block truncate text-[13px] font-semibold leading-5 text-ink;
+}
+
+.doc-picker-option small {
+  @apply block text-xs leading-5 text-muted;
+}
+
+.check-box {
+  @apply grid h-5 w-5 shrink-0 place-items-center rounded border border-line bg-white text-moss;
 }
 
 .icon-button {
@@ -254,7 +303,11 @@ button {
 }
 
 .query-strip {
-  @apply mx-6 mt-5 flex min-h-11 items-center gap-3 rounded-md border border-line bg-white/55 px-4 text-sm text-muted;
+  @apply mx-6 mt-5 flex min-h-11 min-w-0 items-center gap-3 overflow-hidden rounded-md border border-line bg-white/55 px-4 text-sm text-muted;
+}
+
+.query-doc-filter {
+  @apply min-w-0 flex-1 truncate;
 }
 
 .query-strip .divider {
@@ -471,6 +524,75 @@ button {
   @apply mt-1 block text-xs text-muted;
 }
 
+.document-manager-shell {
+  @apply fixed inset-0 z-50;
+}
+
+.document-manager-backdrop {
+  @apply absolute inset-0 bg-ink/20 backdrop-blur-[2px];
+}
+
+.document-manager {
+  @apply absolute right-0 top-0 flex h-full w-[min(460px,94vw)] flex-col border-l border-line bg-[#fbfaf7] px-5 py-6 shadow-soft;
+}
+
+.document-manager-head {
+  @apply flex items-start justify-between gap-4 border-b border-line pb-5;
+}
+
+.document-manager-head h2 {
+  @apply mt-1 font-serif text-[28px] leading-tight text-ink;
+}
+
+.upload-zone {
+  @apply mt-5 flex gap-2;
+}
+
+.upload-action {
+  @apply flex h-11 flex-1 items-center justify-center gap-2 rounded-md bg-moss px-4 text-[14px] font-semibold text-white transition duration-200 hover:bg-[#185f44] disabled:cursor-not-allowed disabled:opacity-55;
+}
+
+.document-panel-block {
+  @apply mt-7 border-t border-line pt-5;
+}
+
+.job-list,
+.managed-document-list {
+  @apply space-y-2.5;
+}
+
+.job-item,
+.managed-document {
+  @apply flex min-h-16 items-center gap-3 rounded-md border border-line bg-white/70 px-3 py-3 text-sm;
+}
+
+.job-item.failed {
+  @apply border-[#e4b9ae] bg-[#fff5f2];
+}
+
+.job-item > span:last-child,
+.managed-document > span {
+  @apply min-w-0 flex-1;
+}
+
+.job-item strong,
+.managed-document strong {
+  @apply block truncate text-[13px] font-semibold leading-5 text-ink;
+}
+
+.job-item small,
+.managed-document small {
+  @apply mt-0.5 block truncate text-xs leading-5 text-muted;
+}
+
+.managed-document svg {
+  @apply shrink-0 text-brass;
+}
+
+.managed-delete {
+  @apply grid h-8 w-8 shrink-0 place-items-center rounded-md border border-transparent text-muted transition duration-200 hover:border-line hover:bg-[#f3efe7] hover:text-ink disabled:cursor-not-allowed disabled:opacity-45;
+}
+
 @media (max-width: 1023px) {
   .inspector {
     @apply fixed right-0 top-0 z-30 w-[min(360px,92vw)] shadow-soft;
@@ -510,12 +632,13 @@ button {
     @apply w-full;
   }
 
-  .doc-select {
+  .doc-picker {
     @apply min-w-0 flex-1;
+    width: auto;
   }
 
-  .doc-select select {
-    @apply min-w-0 flex-1;
+  .doc-picker-menu {
+    @apply left-0 right-auto w-[calc(100vw-88px)];
   }
 
   .query-strip,

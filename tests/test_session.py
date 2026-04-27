@@ -91,10 +91,33 @@ class SessionStoreTests(unittest.TestCase):
 
             self.assertIsNotNone(session)
             self.assertEqual(session.doc_id, "doc-a")
+            self.assertEqual(session.doc_ids, ["doc-a"])
             self.assertEqual(session.title, "营业总收入是多少？")
             self.assertEqual(len(turns), 1)
             self.assertEqual(turns[0].citations[0]["page"], 12)
             self.assertEqual(turns[0].tool_results[0]["tool_call_id"], "call-1")
+
+    def test_sqlite_store_persists_multiple_document_selection(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "sessions.sqlite3"
+            store = SQLiteSessionStore(db_path)
+
+            created = store.create_session(
+                "session-1",
+                title="对比会话",
+                doc_ids=["doc-a", "doc-b", "doc-a"],
+            )
+            updated = store.update_session("session-1", doc_ids=["doc-b", "doc-c"])
+            store.clear_document_references("doc-b")
+            reloaded = SQLiteSessionStore(db_path).get_session("session-1")
+
+        self.assertEqual(created.doc_id, "doc-a")
+        self.assertEqual(created.doc_ids, ["doc-a", "doc-b"])
+        self.assertEqual(updated.doc_id, "doc-b")
+        self.assertEqual(updated.doc_ids, ["doc-b", "doc-c"])
+        self.assertIsNotNone(reloaded)
+        self.assertEqual(reloaded.doc_id, "doc-c")
+        self.assertEqual(reloaded.doc_ids, ["doc-c"])
 
 
 if __name__ == "__main__":

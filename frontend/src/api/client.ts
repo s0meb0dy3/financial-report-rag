@@ -4,6 +4,8 @@ export type ChatRequest = components["schemas"]["ChatRequest"];
 export type ChatResponse = components["schemas"]["ChatResponse"];
 export type CitationResponse = components["schemas"]["CitationResponse"];
 export type CreateSessionRequest = components["schemas"]["CreateSessionRequest"];
+export type DocumentJobResponse = components["schemas"]["DocumentJobResponse"];
+export type DocumentJobsResponse = components["schemas"]["DocumentJobsResponse"];
 export type DocumentResponse = components["schemas"]["DocumentResponse"];
 export type DocumentsResponse = components["schemas"]["DocumentsResponse"];
 export type SessionDetailResponse = components["schemas"]["SessionDetailResponse"];
@@ -58,6 +60,36 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function listDocuments() {
   return requestJson<DocumentsResponse>("/documents");
+}
+
+export async function uploadDocument(file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${API_PREFIX}/documents/upload`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+  return (await response.json()) as DocumentJobResponse;
+}
+
+export function listDocumentJobs() {
+  return requestJson<DocumentJobsResponse>("/documents/jobs");
+}
+
+export function getDocumentJob(jobId: string) {
+  return requestJson<DocumentJobResponse>(`/documents/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function deleteDocument(docId: string) {
+  const response = await fetch(`${API_PREFIX}/documents/${encodeURIComponent(docId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw await responseError(response);
+  }
 }
 
 export function listSessions() {

@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from app.retrieval import (
+    DEFAULT_EMBEDDING_MAX_CHARS,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_OPENROUTER_BASE_URL,
     Retriever,
@@ -17,6 +18,7 @@ class RetrieverTests(unittest.TestCase):
         self.assertEqual(retriever.api_key, "test-key")
         self.assertEqual(retriever.base_url, DEFAULT_OPENROUTER_BASE_URL)
         self.assertEqual(retriever.embedding_model, DEFAULT_EMBEDDING_MODEL)
+        self.assertEqual(retriever.max_embedding_chars, DEFAULT_EMBEDDING_MAX_CHARS)
 
     def test_from_env_reads_environment_overrides(self) -> None:
         with patch.dict(
@@ -25,6 +27,7 @@ class RetrieverTests(unittest.TestCase):
                 "OPENROUTER_API_KEY": "test-key",
                 "OPENROUTER_BASE_URL": "https://example.com/api/v1",
                 "EMBEDDING_MODEL": "custom-model",
+                "EMBEDDING_MAX_CHARS": "1234",
             },
             clear=True,
         ):
@@ -33,6 +36,7 @@ class RetrieverTests(unittest.TestCase):
         self.assertEqual(retriever.api_key, "test-key")
         self.assertEqual(retriever.base_url, "https://example.com/api/v1")
         self.assertEqual(retriever.embedding_model, "custom-model")
+        self.assertEqual(retriever.max_embedding_chars, 1234)
 
     def test_extract_embeddings_reads_openrouter_shape(self) -> None:
         response_json = {
@@ -133,6 +137,20 @@ class RetrieverTests(unittest.TestCase):
         vector_store.upsert_documents.assert_called_once()
         self.assertEqual(embedded[0]["embedding"], [1.0, 0.0])
 
+    def test_embed_truncates_oversized_text_before_request(self) -> None:
+        retriever = Retriever(api_key="test-key", max_embedding_chars=5)
+        response = MagicMock()
+        response.text = '{"data": [{"embedding": [1.0, 0.0]}]}'
+        response.raise_for_status.return_value = None
+        client = MagicMock()
+        client.post.return_value = response
+        retriever._client = client
+
+        embeddings = retriever.embed(["123456789"])
+
+        self.assertEqual(embeddings, [[1.0, 0.0]])
+        self.assertEqual(client.post.call_args.kwargs["json"]["input"], ["12345"])
+
     def test_search_embeds_query_and_delegates_to_vector_store(self) -> None:
         vector_store = MagicMock()
         vector_store.search.return_value = [
@@ -173,6 +191,14 @@ class RetrieverTests(unittest.TestCase):
                 {"doc_id": "doc-b", "doc_name": "doc-b.pdf"},
             ],
         )
+
+    def test_delete_document_delegates_to_vector_store(self) -> None:
+        vector_store = MagicMock()
+        retriever = Retriever(api_key="test-key", vector_store=vector_store)
+
+        retriever.delete_document("doc-a")
+
+        vector_store.delete_document.assert_called_once_with("doc-a")
 
     def test_close_shuts_down_existing_client(self) -> None:
         retriever = Retriever(api_key="test-key")

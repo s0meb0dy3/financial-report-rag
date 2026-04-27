@@ -6,6 +6,7 @@ from app.retrieval.hybrid import (
 )
 from app.retrieval.retriever import (
     DEFAULT_EMBEDDING_BATCH_SIZE,
+    DEFAULT_EMBEDDING_MAX_CHARS,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_OPENROUTER_BASE_URL,
     ChromaRetriever,
@@ -26,6 +27,7 @@ __all__ = [
     "DEFAULT_CHROMA_COLLECTION_NAME",
     "DEFAULT_CHROMA_PERSIST_DIR",
     "DEFAULT_EMBEDDING_BATCH_SIZE",
+    "DEFAULT_EMBEDDING_MAX_CHARS",
     "DEFAULT_EMBEDDING_MODEL",
     "DEFAULT_OPENROUTER_BASE_URL",
     "ChromaRetriever",

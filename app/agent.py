@@ -37,13 +37,31 @@ load_dotenv()
 DEFAULT_CHAT_MODEL = "qwen/qwen3.6-plus:free"
 DEFAULT_SYSTEM_MESSAGE = (
     "你是一个财报问答助手。"
-    "对于表格和指标问题，优先调用 search_tables 找候选表，再在需要时调用 extract_table 读取完整表格。"
-    "如果表格工具找不到，再调用 search_reports 工具检索资料。"
+    "你可以调用 search_reports 工具检索财报正文和表格 chunk。"
     "回答时只依据检索到的证据作答；如果证据不足，就明确回答“我不知道”。"
     "给出结论时尽量带上文档名和页码。"
 )
 MAX_TOOL_CALLS = 5
 EXIT_COMMANDS = {"exit", "quit", "q"}
+
+
+def _normalize_doc_ids(
+    doc_ids: list[str] | None = None,
+    *,
+    fallback_doc_id: str | None = None,
+) -> list[str]:
+    candidates = doc_ids if doc_ids is not None else ([fallback_doc_id] if fallback_doc_id else [])
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        doc_id = value.strip()
+        if not doc_id or doc_id in seen:
+            continue
+        seen.add(doc_id)
+        normalized.append(doc_id)
+    return normalized
 
 
 class AgentLoop:
@@ -121,12 +139,18 @@ class AgentLoop:
         *,
         top_k: int,
         doc_id: Optional[str],
+        doc_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         prepared = dict(arguments)
         if tool_name == "search_reports":
             prepared.setdefault("top_k", top_k)
-        if tool_name in {"search_reports", "search_tables", "extract_table"} and doc_id is not None:
-            prepared.setdefault("doc_id", doc_id)
+            resolved_doc_ids = _normalize_doc_ids(doc_ids, fallback_doc_id=doc_id)
+            if len(resolved_doc_ids) == 1:
+                prepared["doc_id"] = resolved_doc_ids[0]
+                prepared.pop("doc_ids", None)
+            elif len(resolved_doc_ids) > 1:
+                prepared["doc_ids"] = resolved_doc_ids
+                prepared.pop("doc_id", None)
         return prepared
 
     def run_turn(
@@ -135,10 +159,14 @@ class AgentLoop:
         session_id: Optional[str] = None,
         top_k: Optional[int] = None,
         doc_id: Optional[str] = None,
+        doc_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         active_session_id = session_id or "default"
         resolved_top_k = self.top_k if top_k is None else top_k
-        resolved_doc_id = self.doc_id if doc_id is None else doc_id
+        resolved_doc_ids = _normalize_doc_ids(
+            doc_ids,
+            fallback_doc_id=self.doc_id if doc_id is None else doc_id,
+        )
         result = self._runtime.run_turn(
             question,
             session_id=active_session_id,
@@ -146,7 +174,8 @@ class AgentLoop:
                 tool_name,
                 arguments,
                 top_k=resolved_top_k,
-                doc_id=resolved_doc_id,
+                doc_id=None,
+                doc_ids=resolved_doc_ids,
             ),
         )
         payload = {
@@ -173,7 +202,7 @@ class AgentLoop:
                 assistant_content=payload["answer"],
                 citations=payload["citations"],
                 tool_results=payload["tool_results"],
-                doc_id=resolved_doc_id,
+                doc_ids=resolved_doc_ids if resolved_doc_ids else None,
             )
         return payload
 
@@ -183,10 +212,14 @@ class AgentLoop:
         session_id: Optional[str] = None,
         top_k: Optional[int] = None,
         doc_id: Optional[str] = None,
+        doc_ids: list[str] | None = None,
     ):
         active_session_id = session_id or "default"
         resolved_top_k = self.top_k if top_k is None else top_k
-        resolved_doc_id = self.doc_id if doc_id is None else doc_id
+        resolved_doc_ids = _normalize_doc_ids(
+            doc_ids,
+            fallback_doc_id=self.doc_id if doc_id is None else doc_id,
+        )
         for event in self._runtime.run_turn_stream(
             question,
             session_id=active_session_id,
@@ -194,7 +227,8 @@ class AgentLoop:
                 tool_name,
                 arguments,
                 top_k=resolved_top_k,
-                doc_id=resolved_doc_id,
+                doc_id=None,
+                doc_ids=resolved_doc_ids,
             ),
         ):
             if event.get("event") == "final":
@@ -207,7 +241,7 @@ class AgentLoop:
                         assistant_content=final_payload.get("answer", ""),
                         citations=final_payload.get("citations", []),
                         tool_results=final_payload.get("tool_results", []),
-                        doc_id=resolved_doc_id,
+                        doc_ids=resolved_doc_ids if resolved_doc_ids else None,
                     )
             yield event
 

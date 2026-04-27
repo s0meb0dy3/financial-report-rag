@@ -13,6 +13,7 @@ from app.retrieval.vector_store import ChromaVectorStore, VectorStore
 DEFAULT_EMBEDDING_MODEL = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_EMBEDDING_BATCH_SIZE = 200
+DEFAULT_EMBEDDING_MAX_CHARS = 8000
 
 
 class RetrieverPort(Protocol):
@@ -39,6 +40,7 @@ class ChromaRetriever:
             base_url=os.environ.get("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
             embedding_model=os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
             batch_size=int(os.environ.get("EMBEDDING_BATCH_SIZE", DEFAULT_EMBEDDING_BATCH_SIZE)),
+            max_embedding_chars=int(os.environ.get("EMBEDDING_MAX_CHARS", DEFAULT_EMBEDDING_MAX_CHARS)),
         )
 
     def __init__(
@@ -48,6 +50,7 @@ class ChromaRetriever:
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         timeout: float = 120,
         batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
+        max_embedding_chars: int = DEFAULT_EMBEDDING_MAX_CHARS,
         vector_store: Optional[VectorStore] = None,
     ):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
@@ -57,6 +60,7 @@ class ChromaRetriever:
         self.embedding_model = embedding_model
         self.timeout = timeout
         self.batch_size = max(1, batch_size)
+        self.max_embedding_chars = max(1, int(max_embedding_chars))
         self._client: Optional[httpx.Client] = None
         self.vector_store = vector_store or ChromaVectorStore.from_env()
         self._last_retrieval_queries: list[str] = []
@@ -94,13 +98,20 @@ class ChromaRetriever:
                 f"body_preview={preview!r}"
             ) from exc
 
+    def _prepare_embedding_input(self, text: str) -> str:
+        value = str(text)
+        if len(value) <= self.max_embedding_chars:
+            return value
+        return value[: self.max_embedding_chars]
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        prepared_texts = [self._prepare_embedding_input(text) for text in texts]
         response = self.client.post(
             f"{self.base_url}/embeddings",
             headers=self._headers(),
-            json={"model": self.embedding_model, "input": texts},
+            json={"model": self.embedding_model, "input": prepared_texts},
         )
         response.raise_for_status()
         embeddings = self._extract_embeddings(self._parse_embedding_response(response))
@@ -108,7 +119,7 @@ class ChromaRetriever:
             raise ValueError("No embedding data received")
         return embeddings
 
-    def index_chunks(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def embed_chunks(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         embedded_chunks = []
         for start in range(0, len(chunks), self.batch_size):
             batch = chunks[start : start + self.batch_size]
@@ -117,12 +128,22 @@ class ChromaRetriever:
                 {**chunk, "embedding": embedding}
                 for chunk, embedding in zip(batch, embeddings, strict=True)
             )
+        return embedded_chunks
+
+    def upsert_embedded_chunks(self, embedded_chunks: list[dict[str, Any]]) -> None:
         self.vector_store.upsert_documents(embedded_chunks)
+
+    def index_chunks(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        embedded_chunks = self.embed_chunks(chunks)
+        self.upsert_embedded_chunks(embedded_chunks)
         return embedded_chunks
 
     def index_chunks_from_path(self, chunks_path: Path) -> list[dict[str, Any]]:
         chunks = self._load_json(chunks_path)
         return self.index_chunks(chunks)
+
+    def delete_document(self, doc_id: str) -> None:
+        self.vector_store.delete_document(doc_id)
 
     def search(
         self,

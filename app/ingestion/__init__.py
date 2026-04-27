@@ -2,6 +2,7 @@ from app.ingestion.chunking import StructuredMineruChunker
 from app.ingestion.parsers import (
     DEFAULT_MINERU_BASE_URL,
     DEFAULT_MINERU_LANGUAGE,
+    DEFAULT_MINERU_MAX_PAGES_PER_REQUEST,
     DEFAULT_MINERU_MODEL_VERSION,
     MineruPdfParser,
     build_doc_id,
@@ -29,6 +30,7 @@ __all__ = [
     "ChunkStrategy",
     "DEFAULT_MINERU_BASE_URL",
     "DEFAULT_MINERU_LANGUAGE",
+    "DEFAULT_MINERU_MAX_PAGES_PER_REQUEST",
     "DEFAULT_MINERU_MODEL_VERSION",
     "DocumentParser",
     "IngestionArtifacts",

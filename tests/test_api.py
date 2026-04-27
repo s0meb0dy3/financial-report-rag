@@ -28,7 +28,7 @@ class FakeStreamingLoop:
     def __init__(self) -> None:
         self.retriever = MagicMock()
 
-    def run_turn_stream(self, question, session_id=None, top_k=None, doc_id=None):
+    def run_turn_stream(self, question, session_id=None, top_k=None, doc_id=None, doc_ids=None):
         yield {"event": "status", "data": {"message": "检索证据"}}
         yield {
             "event": "tool_result",
@@ -120,6 +120,34 @@ class ApiTests(unittest.TestCase):
             session_id="web-1",
             top_k=5,
             doc_id="moutai",
+            doc_ids=None,
+        )
+
+    def test_chat_accepts_multiple_document_filters(self) -> None:
+        loop = MagicMock()
+        loop.run_turn.return_value = {
+            "answer": "对比回答",
+            "citations": [],
+            "tool_results": [],
+        }
+
+        with TestClient(create_app(agent_loop=loop)) as client:
+            response = client.post(
+                "/chat",
+                json={
+                    "question": "对比美的和长江电力的营收",
+                    "session_id": "web-1",
+                    "doc_ids": ["midea", "cyc"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        loop.run_turn.assert_called_once_with(
+            "对比美的和长江电力的营收",
+            session_id="web-1",
+            top_k=None,
+            doc_id=None,
+            doc_ids=["midea", "cyc"],
         )
 
     def test_chat_hides_tool_results_by_default(self) -> None:
@@ -144,14 +172,14 @@ class ApiTests(unittest.TestCase):
             with TestClient(create_app(agent_loop=loop, session_store=store)) as client:
                 created = client.post(
                     "/sessions",
-                    json={"title": "测试会话", "doc_id": "moutai"},
+                    json={"title": "测试会话", "doc_ids": ["moutai", "pingan"]},
                 )
                 session_id = created.json()["id"]
 
                 listed = client.get("/sessions")
                 updated = client.patch(
                     f"/sessions/{session_id}",
-                    json={"title": "更新后的会话", "doc_id": "pingan"},
+                    json={"title": "更新后的会话", "doc_ids": ["pingan"]},
                 )
                 store.record_turn(
                     session_id,
@@ -166,10 +194,12 @@ class ApiTests(unittest.TestCase):
                 missing = client.get(f"/sessions/{session_id}")
 
         self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["doc_ids"], ["moutai", "pingan"])
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(listed.json()["sessions"][0]["title"], "测试会话")
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["doc_id"], "pingan")
+        self.assertEqual(updated.json()["doc_ids"], ["pingan"])
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(len(detail.json()["messages"]), 2)
         self.assertEqual(detail.json()["messages"][1]["citations"][0]["page"], 3)

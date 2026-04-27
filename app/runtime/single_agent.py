@@ -237,11 +237,6 @@ class SingleAgentRuntime:
             items = []
             if trace.tool_name == "search_reports":
                 items = trace.output.get("results", [])
-            elif trace.tool_name == "search_tables":
-                items = trace.output.get("tables", [])
-            elif trace.tool_name == "extract_table":
-                table = trace.output.get("table")
-                items = [table] if isinstance(table, dict) else []
             for item in items:
                 if not isinstance(item, dict):
                     continue

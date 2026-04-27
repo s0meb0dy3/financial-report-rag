@@ -198,6 +198,42 @@ class HybridRetrieverTests(unittest.TestCase):
             ],
         )
 
+    def test_hybrid_retriever_applies_multi_document_filter_to_lexical_results(self) -> None:
+        doc_a = make_evidence(
+            chunk_id="doc-a-page-1",
+            doc_id="doc-a",
+            page=1,
+            section_path=["第一章"],
+            text="营业总收入 100 亿元。",
+        )
+        doc_b = make_evidence(
+            chunk_id="doc-b-page-1",
+            doc_id="doc-b",
+            page=1,
+            section_path=["第一章"],
+            text="营业总收入 200 亿元。",
+        )
+        doc_c = make_evidence(
+            chunk_id="doc-c-page-1",
+            doc_id="doc-c",
+            page=1,
+            section_path=["第一章"],
+            text="营业总收入 300 亿元。",
+        )
+        dense_retriever = StubDenseRetriever(
+            search_map={"营业总收入是多少？": [doc_a, doc_b, doc_c]},
+            documents=[doc_a, doc_b, doc_c],
+        )
+        retriever = HybridRetriever(dense_retriever=dense_retriever, query_rewriter=StubRewriter())
+
+        results = retriever.search(
+            "营业总收入是多少？",
+            top_k=3,
+            filters={"doc_id": {"$in": ["doc-a", "doc-c"]}},
+        )
+
+        self.assertEqual([item.doc_id for item in results], ["doc-a", "doc-c"])
+
     def test_hybrid_retriever_regression_queries_rank_expected_chunks(self) -> None:
         cash_correct = make_evidence(
             chunk_id="cash-correct",

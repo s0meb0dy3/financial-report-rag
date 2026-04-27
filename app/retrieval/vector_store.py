@@ -15,6 +15,9 @@ class VectorStore(Protocol):
     def upsert_documents(self, chunks: list[dict[str, Any]]) -> None:
         ...
 
+    def delete_document(self, doc_id: str) -> None:
+        ...
+
     def list_documents(self) -> list[DocumentRef]:
         ...
 
@@ -73,6 +76,12 @@ class ChromaVectorStore:
             ],
             embeddings=[chunk["embedding"] for chunk in chunks],
         )
+
+    def delete_document(self, doc_id: str) -> None:
+        resolved_doc_id = doc_id.strip()
+        if not resolved_doc_id:
+            return
+        self._collection.delete(where={"doc_id": resolved_doc_id})
 
     @staticmethod
     def _build_metadata(chunk: dict[str, Any]) -> dict[str, Any]:

@@ -38,6 +38,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/documents/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload Document */
+        post: operations["upload_document_documents_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Document Jobs */
+        get: operations["list_document_jobs_documents_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Document Job */
+        get: operations["get_document_job_documents_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/{doc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Document */
+        delete: operations["delete_document_documents__doc_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sessions": {
         parameters: {
             query?: never;
@@ -113,6 +181,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Body_upload_document_documents_upload_post */
+        Body_upload_document_documents_upload_post: {
+            /** File */
+            file: string;
+        };
         /** ChatRequest */
         ChatRequest: {
             /** Question */
@@ -123,6 +196,8 @@ export interface components {
             top_k?: number | null;
             /** Doc Id */
             doc_id?: string | null;
+            /** Doc Ids */
+            doc_ids?: string[] | null;
             /**
              * Include Tool Results
              * @default false
@@ -153,6 +228,34 @@ export interface components {
             title?: string | null;
             /** Doc Id */
             doc_id?: string | null;
+            /** Doc Ids */
+            doc_ids?: string[] | null;
+        };
+        /** DocumentJobResponse */
+        DocumentJobResponse: {
+            /** Job Id */
+            job_id: string;
+            /** Status */
+            status: string;
+            /** Stage */
+            stage: string;
+            /** File Name */
+            file_name: string;
+            /** Doc Id */
+            doc_id?: string | null;
+            /** Doc Name */
+            doc_name?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** DocumentJobsResponse */
+        DocumentJobsResponse: {
+            /** Jobs */
+            jobs: components["schemas"]["DocumentJobResponse"][];
         };
         /** DocumentResponse */
         DocumentResponse: {
@@ -160,6 +263,8 @@ export interface components {
             doc_id: string;
             /** Doc Name */
             doc_name: string;
+            /** Chunk Count */
+            chunk_count?: number | null;
         };
         /** DocumentsResponse */
         DocumentsResponse: {
@@ -200,6 +305,8 @@ export interface components {
             title: string;
             /** Doc Id */
             doc_id?: string | null;
+            /** Doc Ids */
+            doc_ids?: string[];
             /** Created At */
             created_at: string;
             /** Updated At */
@@ -234,6 +341,8 @@ export interface components {
             title?: string | null;
             /** Doc Id */
             doc_id?: string | null;
+            /** Doc Ids */
+            doc_ids?: string[] | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -295,6 +404,119 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DocumentsResponse"];
+                };
+            };
+        };
+    };
+    upload_document_documents_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_document_documents_upload_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_document_jobs_documents_jobs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentJobsResponse"];
+                };
+            };
+        };
+    };
+    get_document_job_documents_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_document_documents__doc_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                doc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
