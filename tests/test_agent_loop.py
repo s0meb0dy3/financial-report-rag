@@ -191,5 +191,60 @@ class AgentLoopTests(unittest.TestCase):
             doc_ids=["doc-a", "doc-b"],
         )
 
+    def test_run_turn_executes_search_then_chart_before_final_answer(self) -> None:
+        search_call = MagicMock()
+        search_call.id = "call-search"
+        search_call.function.name = "search_reports"
+        search_call.function.arguments = json.dumps(
+            {"query": "茅台 长江电力 2024 营收 利润"},
+            ensure_ascii=False,
+        )
+        chart_call = MagicMock()
+        chart_call.id = "call-chart"
+        chart_call.function.name = "create_chart"
+        chart_call.function.arguments = json.dumps(
+            {
+                "chart_type": "grouped_bar",
+                "title": "2024 年营收利润对比",
+                "categories": ["营业收入", "归母净利润"],
+                "series": [
+                    {"name": "贵州茅台", "values": [1709.0, 862.28]},
+                    {"name": "长江电力", "values": [844.92, 324.96]},
+                ],
+                "unit": "亿元",
+            },
+            ensure_ascii=False,
+        )
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            make_response(make_message(tool_calls=[search_call])),
+            make_response(make_message(tool_calls=[chart_call])),
+            make_response(make_message(content="带图表的最终回答")),
+        ]
+
+        tool_registry = MagicMock()
+        tool_registry.get_definitions.return_value = [
+            {"type": "function", "function": {"name": "search_reports"}},
+            {"type": "function", "function": {"name": "create_chart"}},
+        ]
+        tool_registry.execute.side_effect = [
+            {"query": "茅台 长江电力 2024 营收 利润", "results": []},
+            {"chart_id": "chart-abc", "chart_type": "grouped_bar", "echarts_option": {}},
+        ]
+        loop = AgentLoop(api_key="test-key", client=client, tool_registry=tool_registry, top_k=5)
+
+        result = loop.run_turn("对比下茅台和长电24年的营收和利润，并画图")
+
+        self.assertEqual(result["answer"], "带图表的最终回答")
+        self.assertEqual([item["tool_name"] for item in result["tool_results"]], ["search_reports", "create_chart"])
+        self.assertEqual(tool_registry.execute.call_args_list[0].args, ("search_reports",))
+        self.assertEqual(tool_registry.execute.call_args_list[0].kwargs["top_k"], 5)
+        self.assertEqual(tool_registry.execute.call_args_list[1].args, ("create_chart",))
+        self.assertEqual(tool_registry.execute.call_args_list[1].kwargs["chart_type"], "grouped_bar")
+        third_call_messages = client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        self.assertEqual(third_call_messages[-1]["role"], "tool")
+        self.assertIn("chart-abc", third_call_messages[-1]["content"])
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@ from typing import Optional
 
 from app.retrieval import RetrieverPort
 from app.tools.base import RegisteredTool, ToolRegistry, ToolSpec
+from app.tools.charts import build_create_chart_tool
 
 
 def build_search_reports_tool(retriever: RetrieverPort) -> RegisteredTool:
@@ -91,4 +92,4 @@ def _doc_filter(doc_ids: list[str]) -> dict | None:
 
 
 def build_default_tool_registry(retriever: RetrieverPort) -> ToolRegistry:
-    return ToolRegistry([build_search_reports_tool(retriever)])
+    return ToolRegistry([build_search_reports_tool(retriever), build_create_chart_tool()])

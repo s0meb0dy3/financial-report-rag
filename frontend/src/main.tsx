@@ -1,6 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import ReactMarkdown from "react-markdown";
+import { BarChart, LineChart, PieChart } from "echarts/charts";
+import {
+  GridComponent,
+  LegendComponent,
+  TitleComponent,
+  TooltipComponent,
+} from "echarts/components";
+import * as echarts from "echarts/core";
+import type { EChartsOption } from "echarts";
+import { CanvasRenderer } from "echarts/renderers";
 import {
   ArrowRight,
   ArrowUp,
@@ -41,6 +51,17 @@ import {
 } from "./api/client";
 import "./styles.css";
 
+echarts.use([
+  BarChart,
+  LineChart,
+  PieChart,
+  GridComponent,
+  LegendComponent,
+  TitleComponent,
+  TooltipComponent,
+  CanvasRenderer,
+]);
+
 type Citation = {
   docId: string;
   docName: string;
@@ -52,6 +73,22 @@ type ToolTrace = {
   name: string;
   status: "done" | "idle" | "running";
   detail: string;
+  query?: string;
+  topK?: number | null;
+  documentIds?: string[];
+  resultCount?: number | null;
+  chartType?: string;
+  chartTitle?: string;
+  seriesCount?: number | null;
+  dataPointCount?: number | null;
+};
+
+type ChartArtifact = {
+  id: string;
+  title: string;
+  chartType: string;
+  option: EChartsOption;
+  sourceNotes: string[];
 };
 
 type Message = {
@@ -60,6 +97,7 @@ type Message = {
   content: string;
   citations?: Citation[];
   tools?: ToolTrace[];
+  charts?: ChartArtifact[];
 };
 
 type Session = {
@@ -142,7 +180,44 @@ function mapCitation(citation: CitationResponse): Citation {
   };
 }
 
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function numberArgument(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+    : [];
+}
+
+function countSeriesPoints(value: unknown) {
+  if (!Array.isArray(value)) return { seriesCount: null, dataPointCount: null };
+  let dataPointCount = 0;
+  for (const item of value) {
+    const values = objectRecord(item).values;
+    if (Array.isArray(values)) {
+      dataPointCount += values.length;
+    }
+  }
+  return { seriesCount: value.length, dataPointCount };
+}
+
 function summarizeTool(tool: ToolTraceResponse) {
+  if (tool.tool_name === "create_chart") {
+    const summary = objectRecord(tool.output).summary;
+    return typeof summary === "string" ? summary : "生成图表";
+  }
   const results = Array.isArray(tool.output.results) ? tool.output.results.length : undefined;
   const tables = Array.isArray(tool.output.tables) ? tool.output.tables.length : undefined;
   if (typeof results === "number") {
@@ -158,11 +233,42 @@ function summarizeTool(tool: ToolTraceResponse) {
 }
 
 function mapTool(tool: ToolTraceResponse): ToolTrace {
+  const argumentsRecord = objectRecord(tool.arguments);
+  const outputRecord = objectRecord(tool.output);
+  const query = typeof argumentsRecord.query === "string" ? argumentsRecord.query : undefined;
+  const topK = numberArgument(argumentsRecord.top_k);
+  const documentIds = normalizeDocumentIds(argumentsRecord.doc_ids, argumentsRecord.doc_id);
+  const resultCount = Array.isArray(tool.output.results)
+    ? tool.output.results.length
+    : Array.isArray(tool.output.tables)
+      ? tool.output.tables.length
+      : null;
+  const chartType =
+    typeof outputRecord.chart_type === "string"
+      ? outputRecord.chart_type
+      : typeof argumentsRecord.chart_type === "string"
+        ? argumentsRecord.chart_type
+        : undefined;
+  const chartTitle =
+    typeof outputRecord.title === "string"
+      ? outputRecord.title
+      : typeof argumentsRecord.title === "string"
+        ? argumentsRecord.title
+        : undefined;
+  const { seriesCount, dataPointCount } = countSeriesPoints(argumentsRecord.series);
   return {
     id: tool.tool_call_id || `${tool.tool_name}-${JSON.stringify(tool.arguments).slice(0, 24)}`,
     name: tool.tool_name,
     status: "done",
     detail: summarizeTool(tool),
+    query,
+    topK,
+    documentIds,
+    resultCount,
+    chartType,
+    chartTitle,
+    seriesCount,
+    dataPointCount,
   };
 }
 
@@ -173,6 +279,41 @@ function statusTool(message: string): ToolTrace {
     status: "running",
     detail: message,
   };
+}
+
+function formatToolDocumentScope(tool: ToolTrace, documents: DocumentRef[]) {
+  const documentIds = tool.documentIds ?? [];
+  if (!documentIds.length) return "全部文档";
+  return formatDocumentSelection(documentIds, documents);
+}
+
+function chartFromTool(tool: ToolTraceResponse): ChartArtifact | null {
+  if (tool.tool_name !== "create_chart") return null;
+  const output = objectRecord(tool.output);
+  const option = objectRecord(output.echarts_option);
+  const chartId = typeof output.chart_id === "string" ? output.chart_id : tool.tool_call_id;
+  const title = typeof output.title === "string" ? output.title : "生成图表";
+  const chartType = typeof output.chart_type === "string" ? output.chart_type : "chart";
+  if (!chartId || !Object.keys(option).length) return null;
+  return {
+    id: chartId,
+    title,
+    chartType,
+    option: option as EChartsOption,
+    sourceNotes: stringArray(output.source_notes),
+  };
+}
+
+function chartsFromTools(tools: ToolTraceResponse[] | undefined) {
+  const charts: ChartArtifact[] = [];
+  const seen = new Set<string>();
+  for (const tool of tools ?? []) {
+    const chart = chartFromTool(tool);
+    if (!chart || seen.has(chart.id)) continue;
+    seen.add(chart.id);
+    charts.push(chart);
+  }
+  return charts;
 }
 
 function cleanAssistantContent(content: string) {
@@ -300,6 +441,55 @@ function MarkdownContent({ content }: { content: string }) {
   );
 }
 
+function EChartsFigure({ chart }: { chart: ChartArtifact }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const instance = echarts.init(container, undefined, { renderer: "canvas" });
+    instance.setOption(chart.option, true);
+    const resize = () => instance.resize();
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
+    resizeObserver?.observe(container);
+    window.addEventListener("resize", resize);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", resize);
+      instance.dispose();
+    };
+  }, [chart.option]);
+
+  return (
+    <figure className="chart-card">
+      <figcaption>
+        <span>{chart.chartType}</span>
+        <strong>{chart.title}</strong>
+      </figcaption>
+      <div className="chart-canvas" ref={containerRef} />
+      {chart.sourceNotes.length ? (
+        <div className="chart-sources">
+          {chart.sourceNotes.map((note) => (
+            <span key={note}>{note}</span>
+          ))}
+        </div>
+      ) : null}
+    </figure>
+  );
+}
+
+function ChartStack({ charts }: { charts: ChartArtifact[] }) {
+  if (!charts.length) return null;
+  return (
+    <div className="chart-stack">
+      {charts.map((chart) => (
+        <EChartsFigure chart={chart} key={chart.id} />
+      ))}
+    </div>
+  );
+}
+
 function welcomeMessage(): Message {
   return {
     id: makeId("assistant"),
@@ -321,12 +511,14 @@ function mapSessionSummary(session: SessionSummaryResponse, documents: DocumentR
 
 function mapSessionMessage(message: SessionMessageResponse): Message {
   const role = message.role === "user" ? "user" : "assistant";
+  const toolResults = message.tool_results ?? [];
   return {
     id: message.id,
     role,
     content: role === "assistant" ? cleanAssistantContent(message.content) : message.content,
     citations: message.citations?.map(mapCitation) ?? [],
-    tools: message.tool_results?.map(mapTool) ?? [],
+    tools: toolResults.map(mapTool),
+    charts: chartsFromTools(toolResults),
   };
 }
 
@@ -687,8 +879,14 @@ function App() {
           if (event.event === "tool_result") {
             updateAssistant((message) => {
               const nextTool = mapTool(event.data);
+              const nextChart = chartFromTool(event.data);
               const existingTools = (message.tools ?? []).filter((tool) => tool.id !== nextTool.id);
-              return { ...message, tools: [...existingTools, nextTool] };
+              const existingCharts = (message.charts ?? []).filter((chart) => chart.id !== nextChart?.id);
+              return {
+                ...message,
+                tools: [...existingTools, nextTool],
+                charts: nextChart ? [...existingCharts, nextChart] : message.charts,
+              };
             });
           }
           if (event.event === "answer_delta") {
@@ -698,11 +896,13 @@ function App() {
             }));
           }
           if (event.event === "final") {
+            const toolResults = event.data.tool_results ?? [];
             updateAssistant((message) => ({
               ...message,
               content: cleanAssistantContent(event.data.answer || message.content || "没有返回答案。"),
               citations: event.data.citations?.map(mapCitation) ?? [],
-              tools: event.data.tool_results?.map(mapTool) ?? message.tools ?? [],
+              tools: toolResults.map(mapTool) ?? message.tools ?? [],
+              charts: chartsFromTools(toolResults),
             }));
           }
           if (event.event === "error") {
@@ -721,6 +921,7 @@ function App() {
         role: "assistant",
         content: `请求 FastAPI 失败：${message}`,
         tools: [{ id: "api-error", name: "chat/stream", status: "idle", detail: "后端请求未完成" }],
+        charts: [],
       }));
     } finally {
       setIsSending(false);
@@ -1013,6 +1214,7 @@ function App() {
                 <div className="avatar">{message.role === "user" ? "你" : <Bot size={17} />}</div>
                 <div className="bubble">
                   {message.content ? <MarkdownContent content={message.content} /> : <p>正在生成...</p>}
+                  {message.charts?.length ? <ChartStack charts={message.charts} /> : null}
                   {message.citations?.length ? (
                     <div className="citation-row">
                       {message.citations.map((citation) => (
@@ -1106,15 +1308,66 @@ function App() {
             <section className="inspector-block">
               <div className="block-title">工具轨迹</div>
               <div className="timeline">
-                {tools.map((tool) => (
-                  <div className="tool-step" key={tool.id}>
-                    <span className={`dot ${tool.status}`} />
-                    <span>
-                      <strong>{tool.name}</strong>
-                      <small>{tool.detail}</small>
-                    </span>
-                  </div>
-                ))}
+                {tools.map((tool, index) => {
+                  const callNumber = tools.slice(0, index + 1).filter((item) => item.status === "done").length;
+                  return (
+                    <div className={`tool-step ${tool.status === "done" ? "is-expanded" : ""}`} key={tool.id}>
+                      <span className={`dot ${tool.status}`} />
+                      <div className="tool-step-body">
+                        <div className="tool-step-head">
+                          <strong>{tool.status === "done" ? `调用 ${callNumber}` : tool.name}</strong>
+                          <small>{tool.detail}</small>
+                        </div>
+                        {tool.status === "done" ? (
+                          <div className="tool-step-detail">
+                            <span className="tool-name">{tool.name}</span>
+                            <dl>
+                              {tool.name === "create_chart" ? (
+                                <>
+                                  <div>
+                                    <dt>title</dt>
+                                    <dd>{tool.chartTitle ?? "未命名图表"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>type</dt>
+                                    <dd>{tool.chartType ?? "chart"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>series</dt>
+                                    <dd>{tool.seriesCount ?? "未知"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>points</dt>
+                                    <dd>{tool.dataPointCount ?? "未知"}</dd>
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div>
+                                    <dt>query</dt>
+                                    <dd>{tool.query ?? "未提供"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>top_k</dt>
+                                    <dd>{tool.topK ?? "默认"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>results</dt>
+                                    <dd>{tool.resultCount ?? "未知"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>docs</dt>
+                                    <dd>{formatToolDocumentScope(tool, documents)}</dd>
+                                  </div>
+                                </>
+                              )}
+                            </dl>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </section>
 

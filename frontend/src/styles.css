@@ -394,6 +394,38 @@ button {
   @apply whitespace-nowrap text-right;
 }
 
+.chart-stack {
+  @apply mt-5 space-y-4;
+}
+
+.chart-card {
+  @apply overflow-hidden rounded-md border border-line bg-[#fbfaf7];
+}
+
+.chart-card figcaption {
+  @apply flex min-w-0 items-center justify-between gap-3 border-b border-line px-4 py-3;
+}
+
+.chart-card figcaption span {
+  @apply shrink-0 rounded-sm bg-[#eef6f1] px-2 py-0.5 text-[11px] font-semibold uppercase text-moss;
+}
+
+.chart-card figcaption strong {
+  @apply min-w-0 truncate text-[13px] font-semibold leading-5 text-ink;
+}
+
+.chart-canvas {
+  @apply h-[320px] w-full;
+}
+
+.chart-sources {
+  @apply flex flex-wrap gap-2 border-t border-line px-4 py-3;
+}
+
+.chart-sources span {
+  @apply rounded-sm bg-white px-2 py-1 text-xs leading-5 text-muted;
+}
+
 .citation-row {
   @apply mt-4 flex flex-wrap gap-2 border-t border-line pt-3;
 }
@@ -494,6 +526,50 @@ button {
 
 .tool-step {
   @apply bg-transparent px-0 py-1;
+}
+
+.tool-step.is-expanded {
+  @apply rounded-md border border-line bg-white/70 px-3 py-3 shadow-[0_8px_26px_rgba(30,28,24,0.05)];
+}
+
+.tool-step-body {
+  @apply min-w-0 flex-1;
+}
+
+.tool-step-head {
+  @apply flex min-w-0 items-baseline justify-between gap-2;
+}
+
+.tool-step-head strong {
+  @apply shrink-0 text-[13px] font-semibold leading-5 text-ink;
+}
+
+.tool-step-head small {
+  @apply min-w-0 truncate text-xs leading-5 text-muted;
+}
+
+.tool-step-detail {
+  @apply mt-2 rounded-md border border-line bg-[#fbfaf7] p-2;
+}
+
+.tool-name {
+  @apply mb-2 inline-flex rounded-sm bg-[#eef6f1] px-2 py-0.5 text-[11px] font-semibold text-moss;
+}
+
+.tool-step-detail dl {
+  @apply space-y-1.5;
+}
+
+.tool-step-detail div {
+  @apply grid grid-cols-[48px_minmax(0,1fr)] gap-2 text-xs leading-5;
+}
+
+.tool-step-detail dt {
+  @apply font-semibold text-muted;
+}
+
+.tool-step-detail dd {
+  @apply min-w-0 break-words text-ink;
 }
 
 .dot {
