@@ -134,7 +134,7 @@ wheels = [
 ]
 
 [[package]]
-name = "caibaoagent"
+name = "fintell"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

@@ -14,4 +14,4 @@ logs/
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
-caibaoagent-frontend.png
+fintell-frontend.png

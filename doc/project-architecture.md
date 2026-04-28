@@ -1,8 +1,8 @@
-# CaibaoAgent 项目架构
+# Fintell 项目架构
 
 ## 1. 架构目标
 
-CaibaoAgent 当前定位是单用户本地财报 RAG 工作台。项目保留 CLI 能力，同时新增 FastAPI 后端和 React 前端，让同一套 Agent runtime 可以被命令行、HTTP API 和 Web UI 复用。
+Fintell 当前定位是单用户本地财报 RAG 工作台。项目保留 CLI 能力，同时新增 FastAPI 后端和 React 前端，让同一套 Agent runtime 可以被命令行、HTTP API 和 Web UI 复用。
 
 核心目标：
 

@@ -15,11 +15,11 @@ import {
   ArrowRight,
   ArrowUp,
   BarChart3,
-  Bot,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   FileText,
   MessageSquarePlus,
   PanelRightOpen,
@@ -28,6 +28,7 @@ import {
   Sparkles,
   Trash2,
   UploadCloud,
+  UserRound,
   X,
 } from "lucide-react";
 import {
@@ -623,6 +624,8 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [draft, setDraft] = useState("");
+  const [copiedMessageId, setCopiedMessageId] = useState("");
+  const [showSidebar, setShowSidebar] = useState(true);
   const [showInspector, setShowInspector] = useState(true);
   const [showDocumentManager, setShowDocumentManager] = useState(false);
   const [showDocumentPicker, setShowDocumentPicker] = useState(false);
@@ -874,6 +877,33 @@ function App() {
     void updateDocuments(Array.from(selected));
   }
 
+  async function copyMessage(message: Message) {
+    const content = message.content.trim();
+    if (!content) return;
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = content;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopiedMessageId(message.id);
+      window.setTimeout(() => {
+        setCopiedMessageId((currentId) => (currentId === message.id ? "" : currentId));
+      }, 1400);
+    } catch (error) {
+      setApiError(errorMessage(error, "复制失败，请重试"));
+    }
+  }
+
   async function sendMessage() {
     const session = activeSession;
     const question = (draftRef.current?.value ?? draft).trim();
@@ -1049,9 +1079,9 @@ function App() {
               <div className="welcome-mark">
                 <BarChart3 size={19} />
               </div>
-              <span>CaibaoAgent</span>
+              <span>Fintell</span>
             </div>
-            <p className="welcome-kicker">Financial report RAG</p>
+            <p className="welcome-kicker">Financial intelligence workspace</p>
             <h1>把年报问答，放回清晰的证据里。</h1>
             <p className="welcome-lede">
               面向财报检索、表格指标和引用追踪的轻量研究工作台。进入后可以新建会话、切换文档，并查看每次回答的来源。
@@ -1126,26 +1156,41 @@ function App() {
   return (
     <main className="min-h-screen bg-paper text-ink">
       <div
-        className={`grid min-h-screen grid-cols-[288px_minmax(0,1fr)] transition-[grid-template-columns] duration-300 ${
-          showInspector
-            ? "lg:grid-cols-[304px_minmax(0,1fr)_360px]"
-            : "lg:grid-cols-[304px_minmax(0,1fr)_40px]"
+        className={`grid min-h-screen transition-[grid-template-columns] duration-300 ${
+          showSidebar ? "grid-cols-[288px_minmax(0,1fr)]" : "grid-cols-[72px_minmax(0,1fr)]"
+        } ${
+          showSidebar
+            ? showInspector
+              ? "lg:grid-cols-[304px_minmax(0,1fr)_360px]"
+              : "lg:grid-cols-[304px_minmax(0,1fr)_40px]"
+            : showInspector
+              ? "lg:grid-cols-[72px_minmax(0,1fr)_360px]"
+              : "lg:grid-cols-[72px_minmax(0,1fr)_40px]"
         }`}
       >
-        <aside className="sidebar">
+        <aside className={`sidebar ${showSidebar ? "is-open" : "is-collapsed"}`}>
+          <button
+            className="sidebar-toggle"
+            aria-label={showSidebar ? "收起会话栏" : "展开会话栏"}
+            onClick={() => setShowSidebar((value) => !value)}
+            type="button"
+          >
+            <span className="sr-only">{showSidebar ? "收起会话栏" : "展开会话栏"}</span>
+            {showSidebar ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+          </button>
           <div className="brand">
             <div className="brand-mark">
               <BarChart3 size={18} />
             </div>
-            <div>
-              <div className="brand-name">CaibaoAgent</div>
-              <div className="brand-caption">Financial report RAG</div>
+            <div className="brand-copy">
+              <div className="brand-name">Fintell</div>
+              <div className="brand-caption">Financial intelligence workspace</div>
             </div>
           </div>
 
-          <button className="new-chat" onClick={() => void createSession()}>
+          <button className="new-chat" onClick={() => void createSession()} aria-label="新建对话">
             <MessageSquarePlus size={17} />
-            新建对话
+            <span className="new-chat-label">新建对话</span>
           </button>
 
           <div className="sidebar-section">
@@ -1277,8 +1322,20 @@ function App() {
                 className={`message ${message.role === "user" ? "is-user" : "is-assistant"}`}
                 style={{ animationDelay: `${index * 60}ms` }}
               >
-                <div className="avatar">{message.role === "user" ? "你" : <Bot size={17} />}</div>
+                <div className="avatar" aria-label={message.role === "user" ? "用户" : "Fintell"}>
+                  {message.role === "user" ? <UserRound size={17} /> : <Sparkles size={16} />}
+                </div>
                 <div className="bubble">
+                  <button
+                    className={`copy-message ${copiedMessageId === message.id ? "is-copied" : ""}`}
+                    type="button"
+                    aria-label={copiedMessageId === message.id ? "已复制" : "复制消息"}
+                    title={copiedMessageId === message.id ? "已复制" : "复制消息"}
+                    disabled={!message.content.trim()}
+                    onClick={() => void copyMessage(message)}
+                  >
+                    {copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}
+                  </button>
                   {message.content ? <MarkdownContent content={message.content} /> : <p>正在生成...</p>}
                   {message.charts?.length ? <ChartStack charts={message.charts} /> : null}
                   {message.citations?.length ? (
