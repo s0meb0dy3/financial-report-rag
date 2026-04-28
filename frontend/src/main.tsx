@@ -81,6 +81,12 @@ type ToolTrace = {
   chartTitle?: string;
   seriesCount?: number | null;
   dataPointCount?: number | null;
+  statementType?: string | null;
+  tableId?: string;
+  tableTitle?: string;
+  tableSize?: string;
+  tablePage?: string;
+  tableFound?: boolean;
 };
 
 type ChartArtifact = {
@@ -213,6 +219,17 @@ function countSeriesPoints(value: unknown) {
   return { seriesCount: value.length, dataPointCount };
 }
 
+function pageRangeLabel(item: Record<string, unknown>) {
+  const pageStart = numberArgument(item.page_start);
+  const pageEnd = numberArgument(item.page_end);
+  const page = numberArgument(item.page);
+  if (pageStart !== null && pageEnd !== null) {
+    return pageStart === pageEnd ? `p.${pageStart}` : `p.${pageStart}-${pageEnd}`;
+  }
+  if (page !== null) return `p.${page}`;
+  return undefined;
+}
+
 function summarizeTool(tool: ToolTraceResponse) {
   if (tool.tool_name === "create_chart") {
     const summary = objectRecord(tool.output).summary;
@@ -237,12 +254,55 @@ function mapTool(tool: ToolTraceResponse): ToolTrace {
   const outputRecord = objectRecord(tool.output);
   const query = typeof argumentsRecord.query === "string" ? argumentsRecord.query : undefined;
   const topK = numberArgument(argumentsRecord.top_k);
-  const documentIds = normalizeDocumentIds(argumentsRecord.doc_ids, argumentsRecord.doc_id);
+  const tables = Array.isArray(tool.output.tables) ? tool.output.tables : [];
+  const tableRecord =
+    tool.tool_name === "get_table"
+      ? objectRecord(outputRecord.table)
+      : tables.length
+        ? objectRecord(tables[0])
+        : {};
+  const tableId =
+    typeof argumentsRecord.table_id === "string"
+      ? argumentsRecord.table_id
+      : typeof outputRecord.table_id === "string"
+        ? outputRecord.table_id
+        : typeof tableRecord.table_id === "string"
+          ? tableRecord.table_id
+          : undefined;
+  const tableTitle = typeof tableRecord.title === "string" ? tableRecord.title : undefined;
+  const tableRows = numberArgument(tableRecord.row_count);
+  const tableColumns = numberArgument(tableRecord.column_count);
+  const tableSize =
+    tableRows !== null && tableColumns !== null
+      ? `${tableRows} × ${tableColumns}`
+      : tableRows !== null
+        ? `${tableRows} 行`
+        : undefined;
+  const statementType =
+    typeof argumentsRecord.statement_type === "string"
+      ? argumentsRecord.statement_type
+      : typeof outputRecord.statement_type === "string"
+        ? outputRecord.statement_type
+        : typeof tableRecord.statement_type_guess === "string"
+          ? tableRecord.statement_type_guess
+          : null;
+  const documentIds = normalizeDocumentIds(
+    argumentsRecord.doc_ids,
+    typeof argumentsRecord.doc_id === "string"
+      ? argumentsRecord.doc_id
+      : typeof tableRecord.doc_id === "string"
+        ? tableRecord.doc_id
+        : outputRecord.doc_id,
+  );
   const resultCount = Array.isArray(tool.output.results)
     ? tool.output.results.length
     : Array.isArray(tool.output.tables)
       ? tool.output.tables.length
-      : null;
+      : tool.tool_name === "get_table"
+        ? outputRecord.table
+          ? 1
+          : 0
+        : null;
   const chartType =
     typeof outputRecord.chart_type === "string"
       ? outputRecord.chart_type
@@ -269,6 +329,12 @@ function mapTool(tool: ToolTraceResponse): ToolTrace {
     chartTitle,
     seriesCount,
     dataPointCount,
+    statementType,
+    tableId,
+    tableTitle,
+    tableSize,
+    tablePage: pageRangeLabel(tableRecord),
+    tableFound: tool.tool_name === "get_table" ? Boolean(outputRecord.table) : undefined,
   };
 }
 
@@ -1339,6 +1405,48 @@ function App() {
                                   <div>
                                     <dt>points</dt>
                                     <dd>{tool.dataPointCount ?? "未知"}</dd>
+                                  </div>
+                                </>
+                              ) : tool.name === "search_tables" ? (
+                                <>
+                                  <div>
+                                    <dt>query</dt>
+                                    <dd>{tool.query ?? "未提供"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>type</dt>
+                                    <dd>{tool.statementType ?? "自动"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>tables</dt>
+                                    <dd>{tool.resultCount ?? "未知"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>docs</dt>
+                                    <dd>{formatToolDocumentScope(tool, documents)}</dd>
+                                  </div>
+                                </>
+                              ) : tool.name === "get_table" ? (
+                                <>
+                                  <div>
+                                    <dt>table</dt>
+                                    <dd>{tool.tableId ?? "未提供"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>title</dt>
+                                    <dd>{tool.tableTitle ?? (tool.tableFound ? "未命名表格" : "未找到")}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>size</dt>
+                                    <dd>{tool.tableSize ?? "未知"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>page</dt>
+                                    <dd>{tool.tablePage ?? "未知"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>docs</dt>
+                                    <dd>{formatToolDocumentScope(tool, documents)}</dd>
                                   </div>
                                 </>
                               ) : (

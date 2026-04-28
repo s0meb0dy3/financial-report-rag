@@ -8,6 +8,7 @@ from rank_bm25 import BM25Okapi
 
 
 DEFAULT_TABLES_PATH = "data/processed/tables.json"
+DEFAULT_CHUNKS_PATH = "data/processed/chunks.json"
 ASCII_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 CJK_SEGMENT_PATTERN = re.compile(r"[\u4e00-\u9fff]+")
 STATEMENT_TYPE_HINTS: dict[str, tuple[str, ...]] = {
@@ -64,6 +65,106 @@ def _column_count(record: dict[str, Any]) -> int:
     return max((len(row) for row in matrix if isinstance(row, list)), default=0)
 
 
+def _clean_cell(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _parse_pipe_matrix(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in str(text).splitlines():
+        if "|" not in line:
+            continue
+        cells = [_clean_cell(cell) for cell in line.split("|")]
+        if cells and cells[0] == "":
+            cells = cells[1:]
+        if cells and cells[-1] == "":
+            cells = cells[:-1]
+        cells = [cell for cell in cells if cell]
+        if cells:
+            rows.append(cells)
+    return rows
+
+
+def _guess_statement_type(record: dict[str, Any]) -> str | None:
+    section_text = " ".join(str(item) for item in record.get("section_path", []))
+    compact = _compact_text(
+        "\n".join(
+            [
+                str(record.get("title", "")),
+                section_text,
+                str(record.get("text", "")),
+            ]
+        )
+    )
+    if "主要会计数据" in compact or "主要财务指标" in compact:
+        return "key_metrics"
+    if "现金流量表" in compact or "现金流量净额" in compact:
+        return "cash_flow"
+    if "资产负债表" in compact or "资产总计" in compact or "负债合计" in compact:
+        return "balance_sheet"
+    if "利润表" in compact or "营业总收入" in compact or "营业收入" in compact or "净利润" in compact:
+        return "income_statement"
+    return None
+
+
+def _record_from_table_chunk(chunk: dict[str, Any]) -> dict[str, Any] | None:
+    if chunk.get("chunk_type") != "table":
+        return None
+    table_id = str(chunk.get("table_id") or chunk.get("chunk_id") or "").strip()
+    if not table_id:
+        return None
+    section_path = [str(item) for item in chunk.get("section_path", []) if str(item).strip()]
+    text = str(chunk.get("text", "")).strip()
+    matrix = _parse_pipe_matrix(text)
+    page_start = chunk.get("page_start", chunk.get("page"))
+    page_end = chunk.get("page_end", chunk.get("page"))
+    title = section_path[-1] if section_path else table_id
+    record = {
+        "table_id": table_id,
+        "doc_id": chunk.get("doc_id", ""),
+        "doc_name": chunk.get("doc_name", ""),
+        "title": title,
+        "statement_type_guess": None,
+        "section_path": section_path,
+        "page_start": page_start,
+        "page_end": page_end,
+        "preview_matrix": matrix[:8],
+        "matrix": matrix,
+        "footnotes_text": "",
+        "text": text,
+        "fragments": [
+            {
+                "source_chunk_id": chunk.get("chunk_id", ""),
+                "page_start": page_start,
+                "page_end": page_end,
+                "row_count": len(matrix),
+            }
+        ],
+        "row_count": len(matrix),
+        "column_count": max((len(row) for row in matrix), default=0),
+    }
+    record["statement_type_guess"] = _guess_statement_type(record)
+    return record
+
+
+def _normalize_doc_ids(
+    doc_id: str | None = None,
+    doc_ids: list[str] | None = None,
+) -> list[str]:
+    candidates = doc_ids if doc_ids is not None else ([doc_id] if doc_id else [])
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        resolved = value.strip()
+        if not resolved or resolved in seen:
+            continue
+        seen.add(resolved)
+        normalized.append(resolved)
+    return normalized
+
+
 class JsonTableRepository:
     @classmethod
     def from_env(cls) -> "JsonTableRepository":
@@ -74,19 +175,42 @@ class JsonTableRepository:
                 str(project_root / DEFAULT_TABLES_PATH),
             )
         )
-        return cls(path=path)
+        chunks_path = Path(
+            os.environ.get(
+                "CHUNKS_PATH",
+                str(project_root / DEFAULT_CHUNKS_PATH),
+            )
+        )
+        return cls(path=path, chunks_path=chunks_path)
 
-    def __init__(self, path: Path, records: Optional[list[dict[str, Any]]] = None):
+    def __init__(
+        self,
+        path: Path,
+        records: Optional[list[dict[str, Any]]] = None,
+        chunks_path: Path | None = None,
+    ):
         self.path = Path(path)
+        self.chunks_path = Path(chunks_path) if chunks_path is not None else None
         self.records = records if records is not None else self._load_records()
         self._search_texts = [self._build_search_text(record) for record in self.records]
         corpus = [tokenize_table_text(text) or ["__empty__"] for text in self._search_texts]
         self._bm25 = BM25Okapi(corpus) if corpus else None
 
     def _load_records(self) -> list[dict[str, Any]]:
-        if not self.path.exists():
+        if self.path.exists():
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        if self.chunks_path is None or not self.chunks_path.exists():
             return []
-        return json.loads(self.path.read_text(encoding="utf-8"))
+        chunks = json.loads(self.chunks_path.read_text(encoding="utf-8"))
+        if not isinstance(chunks, list):
+            return []
+        return [
+            record
+            for chunk in chunks
+            if isinstance(chunk, dict)
+            for record in [_record_from_table_chunk(chunk)]
+            if record is not None
+        ]
 
     @staticmethod
     def _build_search_text(record: dict[str, Any]) -> str:
@@ -135,17 +259,19 @@ class JsonTableRepository:
     def search_tables(
         self,
         *,
-        doc_id: str,
+        doc_id: str | None = None,
+        doc_ids: list[str] | None = None,
         query: str | None = None,
         statement_type: str | None = None,
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        if not doc_id or top_k <= 0:
+        if top_k <= 0:
             return []
+        selected_doc_ids = set(_normalize_doc_ids(doc_id=doc_id, doc_ids=doc_ids))
 
         candidates: list[tuple[int, dict[str, Any]]] = []
         for index, record in enumerate(self.records):
-            if record.get("doc_id") != doc_id:
+            if selected_doc_ids and record.get("doc_id") not in selected_doc_ids:
                 continue
             if statement_type and record.get("statement_type_guess") != statement_type:
                 continue
@@ -186,9 +312,9 @@ class JsonTableRepository:
             for score, record in ranked[:top_k]
         ]
 
-    def get_table(self, *, doc_id: str, table_id: str) -> dict[str, Any] | None:
+    def get_table(self, *, table_id: str, doc_id: str | None = None) -> dict[str, Any] | None:
         for record in self.records:
-            if record.get("doc_id") != doc_id:
+            if doc_id and record.get("doc_id") != doc_id:
                 continue
             if record.get("table_id") != table_id:
                 continue

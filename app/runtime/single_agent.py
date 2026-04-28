@@ -1,4 +1,6 @@
-from typing import Protocol
+import json
+import re
+from typing import Any, Protocol
 
 from app.context import ContextBuilder
 from app.domain import Citation, ConversationState, ToolTrace, TurnResult
@@ -48,6 +50,10 @@ class SingleAgentRuntime:
                 tool_definitions=self.tool_registry.get_definitions(),
             )
             if not assistant_message.tool_calls:
+                assistant_message = self._clean_final_assistant_message(
+                    assistant_message,
+                    tool_traces,
+                )
                 updated_state = ConversationState(messages=[*messages, assistant_message])
                 self.session_store.save(active_session_id, updated_state)
                 return TurnResult(
@@ -86,11 +92,12 @@ class SingleAgentRuntime:
             [
                 *messages,
                 UserMessage(
-                    content="不要继续调用工具。请基于已有证据直接给出最终答案；如果证据不足，就回答“我不知道”。"
+                    content="不要继续调用工具。请基于已有证据直接给出最终答案；如果证据不足，就回答“我不知道”。如果已经生成图表，不要输出 ECharts option、JSON 配置或代码块。"
                 ),
             ],
             tool_definitions=self.tool_registry.get_definitions(),
         )
+        forced_answer = self._clean_final_assistant_message(forced_answer, tool_traces)
         updated_state = ConversationState(messages=[*messages, forced_answer])
         self.session_store.save(active_session_id, updated_state)
         return TurnResult(
@@ -121,6 +128,10 @@ class SingleAgentRuntime:
                 tool_definitions=self.tool_registry.get_definitions(),
             )
             if not assistant_message.tool_calls:
+                assistant_message = self._clean_final_assistant_message(
+                    assistant_message,
+                    tool_traces,
+                )
                 updated_state = ConversationState(messages=[*messages, assistant_message])
                 self.session_store.save(active_session_id, updated_state)
                 yield {
@@ -170,7 +181,7 @@ class SingleAgentRuntime:
         forced_messages = [
             *messages,
             UserMessage(
-                content="不要继续调用工具。请基于已有证据直接给出最终答案；如果证据不足，就回答“我不知道”。"
+                content="不要继续调用工具。请基于已有证据直接给出最终答案；如果证据不足，就回答“我不知道”。如果已经生成图表，不要输出 ECharts option、JSON 配置或代码块。"
             ),
         ]
         yield {"event": "status", "data": {"message": "生成最终答案"}}
@@ -178,6 +189,7 @@ class SingleAgentRuntime:
             forced_messages,
             tool_definitions=None,
         )
+        forced_answer = self._clean_final_assistant_message(forced_answer, tool_traces)
         updated_state = ConversationState(messages=[*messages, forced_answer])
         self.session_store.save(active_session_id, updated_state)
         yield {
@@ -219,6 +231,67 @@ class SingleAgentRuntime:
             "tool_call_id": trace.tool_call_id,
         }
 
+    @classmethod
+    def _clean_final_assistant_message(
+        cls,
+        message: AssistantMessage,
+        tool_traces: list[ToolTrace],
+    ) -> AssistantMessage:
+        if not any(trace.tool_name == "create_chart" for trace in tool_traces):
+            return message
+        message.content = cls._strip_chart_option_json(message.content)
+        return message
+
+    @classmethod
+    def _strip_chart_option_json(cls, content: str) -> str:
+        without_fences = re.sub(
+            r"```(?:json)?\s*(\{.*?\})\s*```",
+            lambda match: "" if cls._is_chart_json_text(match.group(1)) else match.group(0),
+            content,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+        decoder = json.JSONDecoder()
+        output: list[str] = []
+        index = 0
+        while index < len(without_fences):
+            if without_fences[index] != "{":
+                output.append(without_fences[index])
+                index += 1
+                continue
+            try:
+                parsed, end = decoder.raw_decode(without_fences[index:])
+            except json.JSONDecodeError:
+                output.append(without_fences[index])
+                index += 1
+                continue
+            if cls._looks_like_echarts_option(parsed):
+                index += end
+                continue
+            output.append(without_fences[index])
+            index += 1
+
+        cleaned = "".join(output)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @classmethod
+    def _is_chart_json_text(cls, content: str) -> bool:
+        try:
+            return cls._looks_like_echarts_option(json.loads(content))
+        except json.JSONDecodeError:
+            return False
+
+    @staticmethod
+    def _looks_like_echarts_option(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        if isinstance(value.get("echarts_option"), dict):
+            return True
+        keys = set(value)
+        return "series" in keys and bool(keys & {"title", "tooltip", "xAxis", "yAxis", "legend", "grid"})
+
     def _turn_payload(self, answer: str, tool_traces: list[ToolTrace]) -> dict:
         return {
             "answer": answer,
@@ -237,6 +310,11 @@ class SingleAgentRuntime:
             items = []
             if trace.tool_name == "search_reports":
                 items = trace.output.get("results", [])
+            elif trace.tool_name == "search_tables":
+                items = trace.output.get("tables", [])
+            elif trace.tool_name == "get_table":
+                table = trace.output.get("table")
+                items = [table] if isinstance(table, dict) else []
             for item in items:
                 if not isinstance(item, dict):
                     continue

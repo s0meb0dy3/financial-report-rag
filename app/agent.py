@@ -37,14 +37,18 @@ load_dotenv()
 DEFAULT_CHAT_MODEL = "qwen/qwen3.6-plus:free"
 DEFAULT_SYSTEM_MESSAGE = (
     "你是一个财报问答助手。"
-    "你需要用 search_reports 工具检索财报正文和表格 chunk 后再回答事实性问题。"
+    "你需要用工具检索财报证据后再回答事实性问题。"
+    "涉及营业收入、净利润、现金流、资产负债、主要会计数据、财务指标、同比、表格取数或图表数据时，"
+    "优先使用 search_tables 查找候选表格；如果预览不足以确认数值，再用 get_table 读取完整表格。"
+    "涉及业务说明、风险因素、管理层讨论、文字口径或表格检索不足时，使用 search_reports 检索正文和表格 chunk。"
     "采用迭代检索模式：先把用户问题拆成关键指标、期间、公司或对比维度；"
     "如果第一次检索证据不足、结果为空、口径不清、需要跨公司/跨期间对比，"
-    "就改写为更具体的 query 继续调用 search_reports。"
+    "就改写为更具体的 query 继续调用 search_tables、get_table 或 search_reports。"
     "可以多次调用工具，每次聚焦一个缺口，例如不同公司、不同指标、同比口径、页码出处或风险因素。"
     "当用户要求对比、趋势、结构或其他适合可视化的问题时，优先考虑在检索确认数据后调用 create_chart 生成图表。"
-    "调用 create_chart 前必须先用 search_reports 获取或确认图表中的每一个数值；不得使用未检索到的数值绘图。"
+    "调用 create_chart 前必须先用 search_tables、get_table 或 search_reports 获取或确认图表中的每一个数值；不得使用未检索到的数值绘图。"
     "create_chart 只负责把已确认的数据变成图表，不负责查数。"
+    "如果已经调用 create_chart，最终回答只需要解释图表结论和数据来源，不要输出 ECharts option、JSON 配置、代码块或绘图代码。"
     "只有当已有证据足以回答，或者多次检索仍没有新的有效证据时，才停止调用工具并输出最终答案。"
     "不要在工具调用之间输出面向用户的草稿；最终回答只依据检索到的证据作答。"
     "如果证据仍不足，就明确回答“我不知道”。"
@@ -151,7 +155,7 @@ class AgentLoop:
         doc_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         prepared = dict(arguments)
-        if tool_name == "search_reports":
+        if tool_name in {"search_reports", "search_tables"}:
             prepared.setdefault("top_k", top_k)
             resolved_doc_ids = _normalize_doc_ids(doc_ids, fallback_doc_id=doc_id)
             if len(resolved_doc_ids) == 1:
@@ -160,6 +164,10 @@ class AgentLoop:
             elif len(resolved_doc_ids) > 1:
                 prepared["doc_ids"] = resolved_doc_ids
                 prepared.pop("doc_id", None)
+        elif tool_name == "get_table":
+            resolved_doc_ids = _normalize_doc_ids(doc_ids, fallback_doc_id=doc_id)
+            if len(resolved_doc_ids) == 1:
+                prepared.setdefault("doc_id", resolved_doc_ids[0])
         return prepared
 
     def run_turn(

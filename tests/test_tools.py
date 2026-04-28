@@ -6,7 +6,9 @@ from app.tools import (
     ToolRegistry,
     build_create_chart_tool,
     build_default_tool_registry,
+    build_get_table_tool,
     build_search_reports_tool,
+    build_search_tables_tool,
 )
 
 
@@ -84,9 +86,12 @@ class ToolTests(unittest.TestCase):
 
     def test_tool_registry_exposes_tool_definition_and_executes_named_tool(self) -> None:
         retriever = MagicMock()
+        table_repository = MagicMock()
         registry = ToolRegistry(
             [
                 build_search_reports_tool(retriever),
+                build_search_tables_tool(table_repository),
+                build_get_table_tool(table_repository),
                 build_create_chart_tool(),
             ]
         )
@@ -94,16 +99,64 @@ class ToolTests(unittest.TestCase):
         definitions = registry.get_definitions()
         names = [item["function"]["name"] for item in definitions]
 
-        self.assertEqual(names, ["search_reports", "create_chart"])
+        self.assertEqual(names, ["search_reports", "search_tables", "get_table", "create_chart"])
         registry.execute("search_reports", query="营业总收入是多少？")
         retriever.search.assert_called_once_with("营业总收入是多少？", top_k=3, filters=None)
 
     def test_default_tool_registry_includes_search_and_chart_tools(self) -> None:
-        registry = build_default_tool_registry(MagicMock())
+        registry = build_default_tool_registry(MagicMock(), table_repository=MagicMock())
 
         names = [item["function"]["name"] for item in registry.get_definitions()]
 
-        self.assertEqual(names, ["search_reports", "create_chart"])
+        self.assertEqual(names, ["search_reports", "search_tables", "get_table", "create_chart"])
+
+    def test_search_tables_executes_table_repository(self) -> None:
+        table_repository = MagicMock()
+        table_repository.search_tables.return_value = [
+            {
+                "table_id": "table-1",
+                "doc_id": "doc-a",
+                "doc_name": "doc-a.pdf",
+                "title": "主要会计数据",
+                "page_start": 5,
+                "page_end": 5,
+                "preview_matrix": [["指标", "2024"], ["营业收入", "100"]],
+                "score": 3.2,
+            }
+        ]
+        tool = build_search_tables_tool(table_repository)
+
+        result = tool.execute(
+            query="营业收入",
+            top_k=2,
+            doc_ids=["doc-a", "doc-b"],
+            statement_type="key_metrics",
+        )
+
+        table_repository.search_tables.assert_called_once_with(
+            query="营业收入",
+            top_k=2,
+            doc_ids=["doc-a", "doc-b"],
+            statement_type="key_metrics",
+        )
+        self.assertEqual(result["tables"][0]["table_id"], "table-1")
+        self.assertEqual(result["doc_ids"], ["doc-a", "doc-b"])
+
+    def test_get_table_executes_table_repository(self) -> None:
+        table_repository = MagicMock()
+        table_repository.get_table.return_value = {
+            "table_id": "table-1",
+            "doc_id": "doc-a",
+            "doc_name": "doc-a.pdf",
+            "matrix": [["指标", "2024"], ["营业收入", "100"]],
+        }
+        tool = build_get_table_tool(table_repository)
+
+        result = tool.execute(table_id="table-1", doc_id="doc-a")
+
+        table_repository.get_table.assert_called_once_with(table_id="table-1", doc_id="doc-a")
+        self.assertEqual(result["table"]["matrix"][1][0], "营业收入")
+        self.assertIsNone(result["error"])
 
     def test_create_chart_generates_grouped_bar_option(self) -> None:
         tool = build_create_chart_tool()
