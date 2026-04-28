@@ -1121,11 +1121,11 @@ function App() {
 
         <section className="workspace">
           <header className="topbar">
-            <div>
+            <div className="topbar-title">
               <p className="eyebrow">当前工作区</p>
               <h1>{activeSession?.title ?? "正在加载会话"}</h1>
             </div>
-          <div className="topbar-actions">
+            <div className="topbar-actions">
               <div className="doc-picker">
                 <FileText size={16} />
                 <button
