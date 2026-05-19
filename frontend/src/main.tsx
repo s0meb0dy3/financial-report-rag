@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   getSession,
   listSessions,
@@ -86,6 +87,23 @@ function CitationList({ citations }: { citations: CitationResponse[] }) {
       ))}
     </div>
   );
+}
+
+function normalizeMarkdown(content: string) {
+  return content
+    .split("\n")
+    .map((line) => {
+      if (!line.includes("| |")) return line;
+      const normalized = line.replace(/\|\s+\|/g, "|\n|");
+      const rows = normalized.split("\n");
+      const hasSeparator = rows.some((row) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(row));
+      return hasSeparator ? normalized : line;
+    })
+    .join("\n");
+}
+
+function MarkdownContent({ content }: { content: string }) {
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdown(content)}</ReactMarkdown>;
 }
 
 async function copyText(text: string) {
@@ -196,7 +214,7 @@ function ReasoningBlock({ message, now }: { message: Message; now: number }) {
       </button>
       {open && message.reasoning ? (
         <div className="reasoning-body">
-          <ReactMarkdown>{message.reasoning}</ReactMarkdown>
+          <MarkdownContent content={message.reasoning} />
         </div>
       ) : null}
     </section>
@@ -211,7 +229,7 @@ function AssistantMessage({ message, now }: { message: Message; now: number }) {
         <section className="assistant-answer" aria-label="回答">
           <div className="markdown-body">
             {message.content ? (
-              <ReactMarkdown>{message.content}</ReactMarkdown>
+              <MarkdownContent content={message.content} />
             ) : (
               <span className="typing">正在生成...</span>
             )}
