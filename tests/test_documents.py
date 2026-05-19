@@ -3,12 +3,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
 
-from fastapi.testclient import TestClient
 from pypdf import PdfReader, PdfWriter
 
-from app.api import create_app
 from app.documents import DocumentManager
 from app.domain import DocumentRef
 from app.ingestion import ParsedDocument, build_doc_id
@@ -198,72 +195,6 @@ class DocumentManagerTests(unittest.TestCase):
         self.assertIn("doc-a", retriever.deleted)
         self.assertEqual(updated_session.doc_id, "doc-b")
         self.assertEqual(updated_session.doc_ids, ["doc-b"])
-
-
-class DocumentApiTests(unittest.TestCase):
-    def test_upload_rejects_non_pdf_files(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = DocumentManager(
-                retriever=FakeRetriever(),
-                upload_dir=Path(temp_dir) / "uploads",
-                chunks_path=Path(temp_dir) / "chunks.json",
-                artifact_dir=Path(temp_dir) / "mineru",
-                parser_factory=FakeParser,
-            )
-            loop = MagicMock()
-            loop.retriever = manager.retriever
-            with TestClient(create_app(agent_loop=loop, document_manager=manager)) as client:
-                response = client.post(
-                    "/documents/upload",
-                    files={"file": ("notes.txt", b"hello", "text/plain")},
-                )
-
-        self.assertEqual(response.status_code, 400)
-
-    def test_upload_pdf_returns_job_and_job_can_be_queried(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = DocumentManager(
-                retriever=FakeRetriever(),
-                upload_dir=Path(temp_dir) / "uploads",
-                chunks_path=Path(temp_dir) / "chunks.json",
-                artifact_dir=Path(temp_dir) / "mineru",
-                parser_factory=FakeParser,
-            )
-            loop = MagicMock()
-            loop.retriever = manager.retriever
-            with TestClient(create_app(agent_loop=loop, document_manager=manager)) as client:
-                created = client.post(
-                    "/documents/upload",
-                    files={"file": ("report.pdf", _write_pdf_bytes(), "application/pdf")},
-                )
-                job_id = created.json()["job_id"]
-                fetched = client.get(f"/documents/jobs/{job_id}")
-
-        self.assertEqual(created.status_code, 202)
-        self.assertEqual(fetched.status_code, 200)
-        self.assertEqual(fetched.json()["status"], "succeeded")
-
-    def test_active_job_blocks_second_upload_and_delete(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = DocumentManager(
-                retriever=FakeRetriever(),
-                upload_dir=Path(temp_dir) / "uploads",
-                chunks_path=Path(temp_dir) / "chunks.json",
-                artifact_dir=Path(temp_dir) / "mineru",
-                parser_factory=FakeParser,
-            )
-            manager.create_upload_job("running.pdf", _write_pdf_bytes())
-            loop = MagicMock()
-            loop.retriever = manager.retriever
-            with TestClient(create_app(agent_loop=loop, document_manager=manager)) as client:
-                upload = client.post(
-                    "/documents/upload",
-                    files={"file": ("another.pdf", _write_pdf_bytes(), "application/pdf")},
-                )
-                delete = client.delete("/documents/doc-a")
-
-        self.assertEqual(upload.status_code, 409)
-        self.assertEqual(delete.status_code, 409)
 
 
 if __name__ == "__main__":

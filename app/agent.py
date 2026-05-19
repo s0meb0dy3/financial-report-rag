@@ -1,396 +1,93 @@
 import argparse
-import os
-from typing import Any, Optional
+from typing import Any
 
-from dotenv import load_dotenv
 from openai import OpenAI
 
-from app.context import ContextBuilder
-from app.retrieval import (
-    DEFAULT_EMBEDDING_BATCH_SIZE,
-    DEFAULT_EMBEDDING_MODEL,
-    DEFAULT_OPENROUTER_BASE_URL,
-    ChromaRetriever,
-    HybridRetriever,
-    LLMQueryRewriter,
-)
-from app.runtime import OpenAIChatClient, SingleAgentRuntime
-from app.session import InMemorySessionStore, SessionStore
-from app.shared import (
-    ANSI_CYAN,
-    ANSI_GRAY,
-    ANSI_GREEN,
-    ANSI_RED,
-    ANSI_RESET,
-    ANSI_YELLOW,
-    print_assistant,
-    print_error,
-    print_system,
-    print_tool_trace,
-    user_prompt_text,
-)
-from app.tools import build_default_tool_registry
+from app.chat_service import ChatService
+from app.config import AppConfig
+from app.session import SQLiteSessionStore
 
 
-load_dotenv()
-
-DEFAULT_CHAT_MODEL = "qwen/qwen3.6-plus:free"
-DEFAULT_SYSTEM_MESSAGE = (
-    "你是一个财报问答助手。"
-    "你需要用工具检索财报证据后再回答事实性问题。"
-    "涉及营业收入、净利润、现金流、资产负债、主要会计数据、财务指标、同比、表格取数或图表数据时，"
-    "优先使用 search_tables 查找候选表格；如果预览不足以确认数值，再用 get_table 读取完整表格。"
-    "涉及业务说明、风险因素、管理层讨论、文字口径或表格检索不足时，使用 search_reports 检索正文和表格 chunk。"
-    "采用迭代检索模式：先把用户问题拆成关键指标、期间、公司或对比维度；"
-    "如果第一次检索证据不足、结果为空、口径不清、需要跨公司/跨期间对比，"
-    "就改写为更具体的 query 继续调用 search_tables、get_table 或 search_reports。"
-    "可以多次调用工具，每次聚焦一个缺口，例如不同公司、不同指标、同比口径、页码出处或风险因素。"
-    "当用户要求对比、趋势、结构或其他适合可视化的问题时，优先考虑在检索确认数据后调用 create_chart 生成图表。"
-    "调用 create_chart 前必须先用 search_tables、get_table 或 search_reports 获取或确认图表中的每一个数值；不得使用未检索到的数值绘图。"
-    "create_chart 只负责把已确认的数据变成图表，不负责查数。"
-    "如果已经调用 create_chart，最终回答只需要解释图表结论和数据来源，不要输出 ECharts option、JSON 配置、代码块或绘图代码。"
-    "只有当已有证据足以回答，或者多次检索仍没有新的有效证据时，才停止调用工具并输出最终答案。"
-    "不要在工具调用之间输出面向用户的草稿；最终回答只依据检索到的证据作答。"
-    "如果证据仍不足，就明确回答“我不知道”。"
-    "给出结论时尽量带上文档名和页码。"
-)
-MAX_TOOL_CALLS = 5
-EXIT_COMMANDS = {"exit", "quit", "q"}
-
-
-def _normalize_doc_ids(
-    doc_ids: list[str] | None = None,
+def build_chat_service_from_env(
     *,
-    fallback_doc_id: str | None = None,
-) -> list[str]:
-    candidates = doc_ids if doc_ids is not None else ([fallback_doc_id] if fallback_doc_id else [])
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for value in candidates:
-        if not isinstance(value, str):
-            continue
-        doc_id = value.strip()
-        if not doc_id or doc_id in seen:
-            continue
-        seen.add(doc_id)
-        normalized.append(doc_id)
-    return normalized
+    session_store: SQLiteSessionStore | None = None,
+) -> ChatService:
+    config = AppConfig.from_env()
+    api_key = config.require_api_key()
+    client = OpenAI(base_url=config.chat_base_url, api_key=api_key)
+    return ChatService(
+        session_store=session_store or SQLiteSessionStore(config.session_db_path),
+        client=client,
+        model=config.chat_model,
+        context_window_tokens=config.context_window_tokens,
+        thinking_enabled=config.chat_thinking_enabled,
+        pass_reasoning_history=config.pass_reasoning_history,
+        stream_include_usage=config.stream_include_usage,
+    )
 
 
-class AgentLoop:
+class Agent:
+    """Simple chat agent."""
+
     @classmethod
-    def from_env(
-        cls,
-        top_k: int = 3,
-        doc_id: Optional[str] = None,
-        session_store: SessionStore | None = None,
-    ) -> "AgentLoop":
-        return cls(
-            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
-            base_url=os.environ.get("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
-            chat_model=os.environ.get("CHAT_MODEL", DEFAULT_CHAT_MODEL),
-            top_k=top_k,
-            doc_id=doc_id,
-            session_store=session_store,
-        )
+    def from_env(cls) -> "Agent":
+        return cls(build_chat_service_from_env())
 
-    def __init__(
-        self,
-        api_key: str,
-        base_url: str = DEFAULT_OPENROUTER_BASE_URL,
-        chat_model: str = DEFAULT_CHAT_MODEL,
-        retriever=None,
-        tool_registry=None,
-        client: Optional[OpenAI] = None,
-        top_k: int = 3,
-        doc_id: Optional[str] = None,
-        max_tool_calls: int = MAX_TOOL_CALLS,
-        session_store: SessionStore | None = None,
-    ):
-        if not api_key:
-            raise ValueError("OPENROUTER_API_KEY is not set")
-
-        self.api_key = api_key
-        self.base_url = base_url
-        self.chat_model = chat_model
-        self.top_k = top_k
-        self.doc_id = doc_id
-        self.max_tool_calls = max_tool_calls
-        self.session_store = session_store or InMemorySessionStore()
-        self._client = client
-        self.retriever = retriever or HybridRetriever(
-            dense_retriever=ChromaRetriever(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                embedding_model=os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
-                batch_size=int(
-                    os.environ.get("EMBEDDING_BATCH_SIZE", DEFAULT_EMBEDDING_BATCH_SIZE)
-                ),
-            ),
-            query_rewriter=LLMQueryRewriter(self.client, self.chat_model),
-        )
-        self._owns_retriever = retriever is None
-        self.tool_registry = tool_registry or build_default_tool_registry(self.retriever)
-        self._runtime = SingleAgentRuntime(
-            llm_client=OpenAIChatClient(self.client, self.chat_model),
-            tool_registry=self.tool_registry,
-            session_store=self.session_store,
-            context_builder=ContextBuilder(system_prompt=DEFAULT_SYSTEM_MESSAGE),
-            max_tool_calls=self.max_tool_calls,
-        )
+    def __init__(self, chat_service: ChatService):
+        self.chat_service = chat_service
 
     @property
     def client(self) -> OpenAI:
-        if self._client is None:
-            self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
-        return self._client
+        return self.chat_service.client
 
-    @staticmethod
-    def _prepare_tool_arguments(
-        tool_name: str,
-        arguments: dict[str, Any],
-        *,
-        top_k: int,
-        doc_id: Optional[str],
-        doc_ids: list[str] | None = None,
-    ) -> dict[str, Any]:
-        prepared = dict(arguments)
-        if tool_name in {"search_reports", "search_tables"}:
-            prepared.setdefault("top_k", top_k)
-            resolved_doc_ids = _normalize_doc_ids(doc_ids, fallback_doc_id=doc_id)
-            if len(resolved_doc_ids) == 1:
-                prepared["doc_id"] = resolved_doc_ids[0]
-                prepared.pop("doc_ids", None)
-            elif len(resolved_doc_ids) > 1:
-                prepared["doc_ids"] = resolved_doc_ids
-                prepared.pop("doc_id", None)
-        elif tool_name == "get_table":
-            resolved_doc_ids = _normalize_doc_ids(doc_ids, fallback_doc_id=doc_id)
-            if len(resolved_doc_ids) == 1:
-                prepared.setdefault("doc_id", resolved_doc_ids[0])
-        return prepared
+    @property
+    def chat_model(self) -> str:
+        return self.chat_service.model
 
-    def run_turn(
+    def ask(
         self,
         question: str,
-        session_id: Optional[str] = None,
-        top_k: Optional[int] = None,
-        doc_id: Optional[str] = None,
-        doc_ids: list[str] | None = None,
+        *,
+        session_id: str = "cli",
     ) -> dict[str, Any]:
-        active_session_id = session_id or "default"
-        resolved_top_k = self.top_k if top_k is None else top_k
-        resolved_doc_ids = _normalize_doc_ids(
-            doc_ids,
-            fallback_doc_id=self.doc_id if doc_id is None else doc_id,
-        )
-        result = self._runtime.run_turn(
-            question,
-            session_id=active_session_id,
-            tool_argument_preparer=lambda tool_name, arguments: self._prepare_tool_arguments(
-                tool_name,
-                arguments,
-                top_k=resolved_top_k,
-                doc_id=None,
-                doc_ids=resolved_doc_ids,
-            ),
-        )
-        payload = {
-            "answer": result.answer,
-            "citations": [
-                {"doc_id": item.doc_id, "doc_name": item.doc_name, "page": item.page}
-                for item in result.citations
-            ],
-            "tool_results": [
-                {
-                    "tool_name": trace.tool_name,
-                    "arguments": trace.arguments,
-                    "output": trace.output,
-                    "tool_call_id": trace.tool_call_id,
-                }
-                for trace in result.tool_traces
-            ],
-        }
-        record_turn = getattr(self.session_store, "record_turn", None)
-        if callable(record_turn):
-            record_turn(
-                active_session_id,
-                user_content=question,
-                assistant_content=payload["answer"],
-                citations=payload["citations"],
-                tool_results=payload["tool_results"],
-                doc_ids=resolved_doc_ids if resolved_doc_ids else None,
-            )
+        result = self.chat_service.ask(question, session_id=session_id)
+        payload = result.to_dict()
+        payload["question"] = question
         return payload
 
-    def run_turn_stream(
-        self,
-        question: str,
-        session_id: Optional[str] = None,
-        top_k: Optional[int] = None,
-        doc_id: Optional[str] = None,
-        doc_ids: list[str] | None = None,
-    ):
-        active_session_id = session_id or "default"
-        resolved_top_k = self.top_k if top_k is None else top_k
-        resolved_doc_ids = _normalize_doc_ids(
-            doc_ids,
-            fallback_doc_id=self.doc_id if doc_id is None else doc_id,
-        )
-        for event in self._runtime.run_turn_stream(
-            question,
-            session_id=active_session_id,
-            tool_argument_preparer=lambda tool_name, arguments: self._prepare_tool_arguments(
-                tool_name,
-                arguments,
-                top_k=resolved_top_k,
-                doc_id=None,
-                doc_ids=resolved_doc_ids,
-            ),
-        ):
-            if event.get("event") == "final":
-                final_payload = event.get("data")
-                record_turn = getattr(self.session_store, "record_turn", None)
-                if callable(record_turn) and isinstance(final_payload, dict):
-                    record_turn(
-                        active_session_id,
-                        user_content=question,
-                        assistant_content=final_payload.get("answer", ""),
-                        citations=final_payload.get("citations", []),
-                        tool_results=final_payload.get("tool_results", []),
-                        doc_ids=resolved_doc_ids if resolved_doc_ids else None,
-                    )
-            yield event
-
     def close(self) -> None:
-        if self._client is not None:
-            self._client.close()
-            self._client = None
-        if self._owns_retriever:
-            self.retriever.close()
+        self.chat_service.close()
 
-    def __enter__(self) -> "AgentLoop":
+    def __enter__(self) -> "Agent":
         return self
 
     def __exit__(self, *_: Any) -> None:
         self.close()
 
 
-class Agent:
-    @classmethod
-    def from_env(cls, top_k: int = 3, doc_id: Optional[str] = None) -> "Agent":
-        return cls(AgentLoop.from_env(top_k=top_k, doc_id=doc_id))
-
-    def __init__(self, loop: AgentLoop):
-        self.loop = loop
-        self.chat_model = loop.chat_model
-        self.client = loop.client
-
-    def ask(self, question: str, top_k: int = 3, filters: Optional[dict] = None) -> dict:
-        result = self.loop.run_turn(
-            question,
-            top_k=top_k,
-            doc_id=filters.get("doc_id") if filters else None,
-        )
-        return {
-            "question": question,
-            "answer": result["answer"],
-            "citations": result["citations"],
-        }
-
-    def close(self) -> None:
-        self.loop.close()
-
-    def __enter__(self) -> "Agent":
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
-
-
 def build_arg_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Chat with indexed financial reports.",
+        description="Ask one question through the chat flow.",
         add_help=add_help,
     )
-    parser.add_argument(
-        "--top-k",
-        type=int,
-        default=3,
-        help="How many chunks to retrieve for each tool call",
-    )
-    parser.add_argument(
-        "--doc-id",
-        help="Optional document filter for retrieval",
-    )
-    parser.add_argument(
-        "--verbose-retrieval",
-        action="store_true",
-        help="Print retrieval rewrite queries and top hit metadata for search tool calls",
-    )
+    parser.add_argument("question", nargs="?", help="Question to ask")
     return parser
 
 
 def run_chat_command(args: argparse.Namespace) -> int:
-    with AgentLoop.from_env(top_k=args.top_k, doc_id=args.doc_id) as loop:
-        print_system("输入问题开始对话，输入 exit / quit / q 结束。")
-
-        while True:
-            try:
-                print(user_prompt_text(), end="")
-                question = input().strip()
-            except EOFError:
-                print()
-                break
-
-            if not question:
-                continue
-
-            if question.lower() in EXIT_COMMANDS:
-                break
-
-            try:
-                result = loop.run_turn(question)
-            except Exception as exc:
-                print_error(str(exc))
-                continue
-
-            for item in result.get("tool_results", []):
-                from app.domain import ToolTrace
-
-                print_tool_trace(
-                    ToolTrace(
-                        tool_name=item.get("tool_name", ""),
-                        arguments=item.get("arguments", {}),
-                        output=item.get("output", {}),
-                        tool_call_id=item.get("tool_call_id", ""),
-                    ),
-                    verbose_retrieval=args.verbose_retrieval,
-                )
-            print_assistant(result["answer"])
-
+    question = (args.question or input("Question: ")).strip()
+    if not question:
+        print("Question is required")
+        return 1
+    with Agent.from_env() as agent:
+        result = agent.ask(question)
+    print(result["answer"])
     return 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    args = build_arg_parser().parse_args(argv)
-    return run_chat_command(args)
-
-
 __all__ = [
-    "ANSI_CYAN",
-    "ANSI_GRAY",
-    "ANSI_GREEN",
-    "ANSI_RED",
-    "ANSI_RESET",
-    "ANSI_YELLOW",
     "Agent",
-    "AgentLoop",
-    "DEFAULT_CHAT_MODEL",
-    "DEFAULT_SYSTEM_MESSAGE",
-    "EXIT_COMMANDS",
-    "MAX_TOOL_CALLS",
     "build_arg_parser",
-    "main",
+    "build_chat_service_from_env",
     "run_chat_command",
 ]

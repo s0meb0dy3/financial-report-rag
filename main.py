@@ -1,8 +1,6 @@
 import argparse
 from typing import Callable
 
-from app.agent import build_arg_parser as build_chat_arg_parser
-from app.agent import run_chat_command
 from app.eval import build_arg_parser as build_eval_arg_parser
 from app.eval import run_eval_command
 from app.ingestion import build_arg_parser as build_ingest_arg_parser
@@ -32,12 +30,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified CLI for the financial report agent.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    _add_command(
-        subparsers,
-        name="chat",
-        build_parser=build_chat_arg_parser,
-        handler=run_chat_command,
-    )
     _add_command(
         subparsers,
         name="ingest",

@@ -1,25 +1,86 @@
-import type { components } from "./schema";
+export type CitationResponse = {
+  doc_id: string;
+  doc_name: string;
+  page: number | null;
+};
 
-export type ChatRequest = components["schemas"]["ChatRequest"];
-export type ChatResponse = components["schemas"]["ChatResponse"];
-export type CitationResponse = components["schemas"]["CitationResponse"];
-export type CreateSessionRequest = components["schemas"]["CreateSessionRequest"];
-export type DocumentJobResponse = components["schemas"]["DocumentJobResponse"];
-export type DocumentJobsResponse = components["schemas"]["DocumentJobsResponse"];
-export type DocumentResponse = components["schemas"]["DocumentResponse"];
-export type DocumentsResponse = components["schemas"]["DocumentsResponse"];
-export type SessionDetailResponse = components["schemas"]["SessionDetailResponse"];
-export type SessionMessageResponse = components["schemas"]["SessionMessageResponse"];
-export type SessionSummaryResponse = components["schemas"]["SessionSummaryResponse"];
-export type SessionsResponse = components["schemas"]["SessionsResponse"];
-export type ToolTraceResponse = components["schemas"]["ToolTraceResponse"];
-export type UpdateSessionRequest = components["schemas"]["UpdateSessionRequest"];
+export type UsageResponse = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  reasoning_tokens: number;
+  cached_tokens: number;
+  audio_tokens: number;
+  image_tokens: number;
+  video_tokens: number;
+  context_window_tokens: number;
+  context_used_tokens: number;
+  context_ratio: number;
+  estimated: boolean;
+};
+
+export type ChatRequest = {
+  question: string;
+  session_id?: string | null;
+};
+
+export type ChatResponse = {
+  session_id: string;
+  answer: string;
+  citations: CitationResponse[];
+  reasoning_content: string;
+  usage: UsageResponse | null;
+};
+
+export type SessionMessageResponse = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: CitationResponse[];
+  reasoning_content: string;
+  tool_results: ToolResultResponse[];
+  usage: UsageResponse | null;
+  created_at: string;
+};
+
+export type ToolResultResponse = {
+  id?: string;
+  name?: string;
+  status?: "running" | "done" | "error";
+  message?: string;
+  evidence_count?: number;
+  table_count?: number;
+  citation_count?: number;
+};
+
+export type SessionDetailResponse = {
+  session: {
+    id: string;
+    title: string;
+    created_at: string;
+    updated_at: string;
+  };
+  messages: SessionMessageResponse[];
+};
 
 export type ChatStreamEvent =
   | { event: "session"; data: { session_id: string } }
   | { event: "status"; data: { message: string } }
-  | { event: "tool_result"; data: ToolTraceResponse }
+  | {
+      event: "tool";
+      data: {
+        id: string;
+        name: string;
+        status: "running" | "done" | "error";
+        message: string;
+        evidence_count?: number;
+        table_count?: number;
+        citation_count?: number;
+      };
+    }
+  | { event: "reasoning_delta"; data: { content: string } }
   | { event: "answer_delta"; data: { content: string } }
+  | { event: "usage"; data: UsageResponse }
   | { event: "final"; data: ChatResponse }
   | { event: "error"; data: { message: string } };
 
@@ -58,72 +119,26 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function listDocuments() {
-  return requestJson<DocumentsResponse>("/documents");
-}
-
-export async function uploadDocument(file: File) {
-  const form = new FormData();
-  form.append("file", file);
-  const response = await fetch(`${API_PREFIX}/documents/upload`, {
-    method: "POST",
-    body: form,
-  });
-  if (!response.ok) {
-    throw await responseError(response);
-  }
-  return (await response.json()) as DocumentJobResponse;
-}
-
-export function listDocumentJobs() {
-  return requestJson<DocumentJobsResponse>("/documents/jobs");
-}
-
-export function getDocumentJob(jobId: string) {
-  return requestJson<DocumentJobResponse>(`/documents/jobs/${encodeURIComponent(jobId)}`);
-}
-
-export async function deleteDocument(docId: string) {
-  const response = await fetch(`${API_PREFIX}/documents/${encodeURIComponent(docId)}`, {
-    method: "DELETE",
-  });
-  if (!response.ok) {
-    throw await responseError(response);
-  }
-}
+export type SessionSummaryResponse = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
 
 export function listSessions() {
-  return requestJson<SessionsResponse>("/sessions");
-}
-
-export function createSession(payload: CreateSessionRequest) {
-  return requestJson<SessionSummaryResponse>("/sessions", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  return requestJson<SessionSummaryResponse[]>("/sessions");
 }
 
 export function getSession(sessionId: string) {
   return requestJson<SessionDetailResponse>(`/sessions/${encodeURIComponent(sessionId)}`);
 }
 
-export function updateSession(
-  sessionId: string,
-  payload: UpdateSessionRequest,
-) {
-  return requestJson<SessionSummaryResponse>(`/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "PATCH",
+export function chat(payload: ChatRequest) {
+  return requestJson<ChatResponse>("/chat", {
+    method: "POST",
     body: JSON.stringify(payload),
   });
-}
-
-export async function deleteSession(sessionId: string) {
-  const response = await fetch(`${API_PREFIX}/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "DELETE",
-  });
-  if (!response.ok) {
-    throw await responseError(response);
-  }
 }
 
 export async function streamChat(
@@ -190,8 +205,10 @@ function parseSseBlock(block: string): ChatStreamEvent | null {
   if (
     eventName === "session" ||
     eventName === "status" ||
-    eventName === "tool_result" ||
+    eventName === "tool" ||
+    eventName === "reasoning_delta" ||
     eventName === "answer_delta" ||
+    eventName === "usage" ||
     eventName === "final" ||
     eventName === "error"
   ) {

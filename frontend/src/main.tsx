@@ -1,1658 +1,546 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import ReactMarkdown from "react-markdown";
-import { BarChart, LineChart, PieChart } from "echarts/charts";
 import {
-  GridComponent,
-  LegendComponent,
-  TitleComponent,
-  TooltipComponent,
-} from "echarts/components";
-import * as echarts from "echarts/core";
-import type { EChartsOption } from "echarts";
-import { CanvasRenderer } from "echarts/renderers";
-import {
-  ArrowRight,
-  ArrowUp,
-  BarChart3,
-  Check,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Copy,
-  FileText,
-  MessageSquarePlus,
-  PanelRightOpen,
-  RefreshCw,
-  Search,
-  Sparkles,
-  Trash2,
-  UploadCloud,
-  UserRound,
-  X,
-} from "lucide-react";
-import {
-  createSession as createBackendSession,
-  deleteDocument as deleteBackendDocument,
-  deleteSession as deleteBackendSession,
   getSession,
-  listDocumentJobs,
-  listDocuments,
   listSessions,
   streamChat,
-  uploadDocument,
-  updateSession as updateBackendSession,
   type CitationResponse,
-  type DocumentJobResponse,
-  type DocumentResponse,
-  type SessionDetailResponse,
   type SessionMessageResponse,
   type SessionSummaryResponse,
-  type ToolTraceResponse,
+  type UsageResponse,
 } from "./api/client";
 import "./styles.css";
-
-echarts.use([
-  BarChart,
-  LineChart,
-  PieChart,
-  GridComponent,
-  LegendComponent,
-  TitleComponent,
-  TooltipComponent,
-  CanvasRenderer,
-]);
-
-type Citation = {
-  docId: string;
-  docName: string;
-  page: number | null;
-};
-
-type ToolTrace = {
-  id: string;
-  name: string;
-  status: "done" | "idle" | "running";
-  detail: string;
-  query?: string;
-  topK?: number | null;
-  documentIds?: string[];
-  resultCount?: number | null;
-  chartType?: string;
-  chartTitle?: string;
-  seriesCount?: number | null;
-  dataPointCount?: number | null;
-  statementType?: string | null;
-  tableId?: string;
-  tableTitle?: string;
-  tableSize?: string;
-  tablePage?: string;
-  tableFound?: boolean;
-};
-
-type ChartArtifact = {
-  id: string;
-  title: string;
-  chartType: string;
-  option: EChartsOption;
-  sourceNotes: string[];
-};
 
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  citations?: Citation[];
-  tools?: ToolTrace[];
-  charts?: ChartArtifact[];
+  citations: CitationResponse[];
+  reasoning: string;
+  usage: UsageResponse | null;
+  startedAt?: number;
+  completedAt?: number;
 };
 
-type Session = {
-  id: string;
-  title: string;
-  documents: string[];
-  updatedAt: string;
-  messages: Message[];
-};
-
-type DocumentRef = {
-  id: string;
-  name: string;
-  chunkCount: number | null;
-};
+function createSessionId() {
+  return typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `session-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function makeId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function formatUpdatedAt(value: string) {
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) return "刚刚";
-  const diff = Math.max(0, Date.now() - timestamp);
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-  if (diff < minute) return "刚刚";
-  if (diff < hour) return `${Math.floor(diff / minute)} 分钟前`;
-  if (diff < day) return `${Math.floor(diff / hour)} 小时前`;
-  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(
-    new Date(timestamp),
-  );
-}
-
-function mapDocument(document: DocumentResponse): DocumentRef {
+function mapMessage(message: SessionMessageResponse): Message {
   return {
-    id: document.doc_id,
-    name: document.doc_name,
-    chunkCount: document.chunk_count ?? null,
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    citations: message.citations ?? [],
+    reasoning: message.reasoning_content ?? "",
+    usage: message.usage ?? null,
   };
 }
 
-function normalizeDocumentIds(documentIds: unknown, fallbackDocumentId: unknown = null) {
-  const candidates = Array.isArray(documentIds)
-    ? documentIds
-    : typeof fallbackDocumentId === "string"
-      ? [fallbackDocumentId]
-      : [];
-  const seen = new Set<string>();
-  return candidates.filter((item): item is string => {
-    if (typeof item !== "string") return false;
-    const value = item.trim();
-    if (!value || seen.has(value)) return false;
-    seen.add(value);
-    return true;
-  });
-}
-
-function validSessionDocuments(session: SessionSummaryResponse, documents: DocumentRef[]) {
-  const available = new Set(documents.map((document) => document.id));
-  return normalizeDocumentIds(session.doc_ids, session.doc_id).filter((docId) => available.has(docId));
-}
-
-function formatDocumentSelection(documentIds: string[], documents: DocumentRef[]) {
-  if (!documentIds.length) return "未选择文档";
-  const names = documentIds
-    .map((docId) => documents.find((document) => document.id === docId)?.name)
-    .filter((name): name is string => Boolean(name));
-  if (!names.length) return `${documentIds.length} 份文档`;
-  if (names.length === 1) return names[0];
-  return `${names.slice(0, 2).join("、")}${names.length > 2 ? ` 等 ${names.length} 份` : ""}`;
-}
-
-function mapCitation(citation: CitationResponse): Citation {
-  return {
-    docId: citation.doc_id,
-    docName: citation.doc_name,
-    page: citation.page ?? null,
+function Icon({
+  name,
+  className = "",
+}: {
+  name:
+    | "bolt"
+    | "chevron"
+    | "copy"
+    | "menu"
+    | "more"
+    | "plus"
+    | "search"
+  className?: string;
+}) {
+  const paths = {
+    bolt: "M13 2 4 14h7l-1 8 10-13h-7l1-7Z",
+    chevron: "m6 9 6 6 6-6",
+    copy: "M8 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Zm-2 8H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1",
+    menu: "M7 4h10M7 12h10M7 20h10",
+    more: "M6 12h.01M12 12h.01M18 12h.01",
+    plus: "M12 5v14M5 12h14",
+    search: "m21 21-4.4-4.4M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z",
   };
-}
-
-function objectRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function numberArgument(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
-function stringArray(value: unknown) {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
-    : [];
-}
-
-function countSeriesPoints(value: unknown) {
-  if (!Array.isArray(value)) return { seriesCount: null, dataPointCount: null };
-  let dataPointCount = 0;
-  for (const item of value) {
-    const values = objectRecord(item).values;
-    if (Array.isArray(values)) {
-      dataPointCount += values.length;
-    }
-  }
-  return { seriesCount: value.length, dataPointCount };
-}
-
-function pageRangeLabel(item: Record<string, unknown>) {
-  const pageStart = numberArgument(item.page_start);
-  const pageEnd = numberArgument(item.page_end);
-  const page = numberArgument(item.page);
-  if (pageStart !== null && pageEnd !== null) {
-    return pageStart === pageEnd ? `p.${pageStart}` : `p.${pageStart}-${pageEnd}`;
-  }
-  if (page !== null) return `p.${page}`;
-  return undefined;
-}
-
-function summarizeTool(tool: ToolTraceResponse) {
-  if (tool.tool_name === "create_chart") {
-    const summary = objectRecord(tool.output).summary;
-    return typeof summary === "string" ? summary : "生成图表";
-  }
-  const results = Array.isArray(tool.output.results) ? tool.output.results.length : undefined;
-  const tables = Array.isArray(tool.output.tables) ? tool.output.tables.length : undefined;
-  if (typeof results === "number") {
-    return `返回 ${results} 条文本证据`;
-  }
-  if (typeof tables === "number") {
-    return `返回 ${tables} 张候选表`;
-  }
-  if (tool.output.table) {
-    return "读取完整表格";
-  }
-  return "已完成";
-}
-
-function mapTool(tool: ToolTraceResponse): ToolTrace {
-  const argumentsRecord = objectRecord(tool.arguments);
-  const outputRecord = objectRecord(tool.output);
-  const query = typeof argumentsRecord.query === "string" ? argumentsRecord.query : undefined;
-  const topK = numberArgument(argumentsRecord.top_k);
-  const tables = Array.isArray(tool.output.tables) ? tool.output.tables : [];
-  const tableRecord =
-    tool.tool_name === "get_table"
-      ? objectRecord(outputRecord.table)
-      : tables.length
-        ? objectRecord(tables[0])
-        : {};
-  const tableId =
-    typeof argumentsRecord.table_id === "string"
-      ? argumentsRecord.table_id
-      : typeof outputRecord.table_id === "string"
-        ? outputRecord.table_id
-        : typeof tableRecord.table_id === "string"
-          ? tableRecord.table_id
-          : undefined;
-  const tableTitle = typeof tableRecord.title === "string" ? tableRecord.title : undefined;
-  const tableRows = numberArgument(tableRecord.row_count);
-  const tableColumns = numberArgument(tableRecord.column_count);
-  const tableSize =
-    tableRows !== null && tableColumns !== null
-      ? `${tableRows} × ${tableColumns}`
-      : tableRows !== null
-        ? `${tableRows} 行`
-        : undefined;
-  const statementType =
-    typeof argumentsRecord.statement_type === "string"
-      ? argumentsRecord.statement_type
-      : typeof outputRecord.statement_type === "string"
-        ? outputRecord.statement_type
-        : typeof tableRecord.statement_type_guess === "string"
-          ? tableRecord.statement_type_guess
-          : null;
-  const documentIds = normalizeDocumentIds(
-    argumentsRecord.doc_ids,
-    typeof argumentsRecord.doc_id === "string"
-      ? argumentsRecord.doc_id
-      : typeof tableRecord.doc_id === "string"
-        ? tableRecord.doc_id
-        : outputRecord.doc_id,
-  );
-  const resultCount = Array.isArray(tool.output.results)
-    ? tool.output.results.length
-    : Array.isArray(tool.output.tables)
-      ? tool.output.tables.length
-      : tool.tool_name === "get_table"
-        ? outputRecord.table
-          ? 1
-          : 0
-        : null;
-  const chartType =
-    typeof outputRecord.chart_type === "string"
-      ? outputRecord.chart_type
-      : typeof argumentsRecord.chart_type === "string"
-        ? argumentsRecord.chart_type
-        : undefined;
-  const chartTitle =
-    typeof outputRecord.title === "string"
-      ? outputRecord.title
-      : typeof argumentsRecord.title === "string"
-        ? argumentsRecord.title
-        : undefined;
-  const { seriesCount, dataPointCount } = countSeriesPoints(argumentsRecord.series);
-  return {
-    id: tool.tool_call_id || `${tool.tool_name}-${JSON.stringify(tool.arguments).slice(0, 24)}`,
-    name: tool.tool_name,
-    status: "done",
-    detail: summarizeTool(tool),
-    query,
-    topK,
-    documentIds,
-    resultCount,
-    chartType,
-    chartTitle,
-    seriesCount,
-    dataPointCount,
-    statementType,
-    tableId,
-    tableTitle,
-    tableSize,
-    tablePage: pageRangeLabel(tableRecord),
-    tableFound: tool.tool_name === "get_table" ? Boolean(outputRecord.table) : undefined,
-  };
-}
-
-function statusTool(message: string): ToolTrace {
-  return {
-    id: `status-${message}`,
-    name: "status",
-    status: "running",
-    detail: message,
-  };
-}
-
-function formatToolDocumentScope(tool: ToolTrace, documents: DocumentRef[]) {
-  const documentIds = tool.documentIds ?? [];
-  if (!documentIds.length) return "全部文档";
-  return formatDocumentSelection(documentIds, documents);
-}
-
-function chartFromTool(tool: ToolTraceResponse): ChartArtifact | null {
-  if (tool.tool_name !== "create_chart") return null;
-  const output = objectRecord(tool.output);
-  const option = objectRecord(output.echarts_option);
-  const chartId = typeof output.chart_id === "string" ? output.chart_id : tool.tool_call_id;
-  const title = typeof output.title === "string" ? output.title : "生成图表";
-  const chartType = typeof output.chart_type === "string" ? output.chart_type : "chart";
-  if (!chartId || !Object.keys(option).length) return null;
-  return {
-    id: chartId,
-    title,
-    chartType,
-    option: option as EChartsOption,
-    sourceNotes: stringArray(output.source_notes),
-  };
-}
-
-function chartsFromTools(tools: ToolTraceResponse[] | undefined) {
-  const charts: ChartArtifact[] = [];
-  const seen = new Set<string>();
-  for (const tool of tools ?? []) {
-    const chart = chartFromTool(tool);
-    if (!chart || seen.has(chart.id)) continue;
-    seen.add(chart.id);
-    charts.push(chart);
-  }
-  return charts;
-}
-
-function cleanAssistantContent(content: string) {
-  return normalizeMarkdownTables(content.replace(/^thought\s*\n+/i, "").trim());
-}
-
-type MarkdownSegment =
-  | { type: "markdown"; content: string }
-  | { type: "table"; rows: string[][] };
-
-function normalizeMarkdownTables(content: string) {
-  return content
-    .split(/\r?\n/)
-    .map((line) => {
-      const pipeCount = (line.match(/\|/g) ?? []).length;
-      if (line.trim().startsWith("|") && pipeCount >= 8) {
-        return line.replace(/\|\s*\|\s*/g, "|\n| ");
-      }
-      return line;
-    })
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n");
-}
-
-function isTableLine(line: string) {
-  const trimmed = line.trim();
-  return trimmed.startsWith("|") && trimmed.endsWith("|") && (trimmed.match(/\|/g) ?? []).length >= 2;
-}
-
-function splitTableRow(line: string) {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
-}
-
-function isDividerRow(row: string[]) {
-  return row.length > 0 && row.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s/g, "")));
-}
-
-function parseMarkdownSegments(content: string): MarkdownSegment[] {
-  const lines = normalizeMarkdownTables(content).split(/\r?\n/);
-  const segments: MarkdownSegment[] = [];
-  const markdownBuffer: string[] = [];
-
-  function flushMarkdown() {
-    const value = markdownBuffer.join("\n").trim();
-    if (value) {
-      segments.push({ type: "markdown", content: value });
-    }
-    markdownBuffer.length = 0;
-  }
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const currentLine = lines[index];
-    const nextLine = lines[index + 1];
-    if (isTableLine(currentLine) && nextLine && isDividerRow(splitTableRow(nextLine))) {
-      flushMarkdown();
-      const tableLines: string[] = [];
-      while (index < lines.length && isTableLine(lines[index])) {
-        tableLines.push(lines[index]);
-        index += 1;
-      }
-      index -= 1;
-
-      const rows = tableLines.map(splitTableRow);
-      if (rows.length >= 2 && isDividerRow(rows[1])) {
-        segments.push({ type: "table", rows: [rows[0], ...rows.slice(2)] });
-      } else {
-        markdownBuffer.push(...tableLines);
-      }
-      continue;
-    }
-
-    markdownBuffer.push(currentLine);
-  }
-
-  flushMarkdown();
-  return segments;
-}
-
-function MarkdownTable({ rows }: { rows: string[][] }) {
-  const [head, ...body] = rows;
   return (
-    <div className="markdown-table-wrap">
-      <table>
-        <thead>
-          <tr>
-            {head.map((cell, index) => (
-              <th key={`${cell}-${index}`}>
-                <ReactMarkdown>{cell}</ReactMarkdown>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {body.map((row, rowIndex) => (
-            <tr key={`${row.join("-")}-${rowIndex}`}>
-              {head.map((_, cellIndex) => (
-                <td key={`${rowIndex}-${cellIndex}`}>
-                  <ReactMarkdown>{row[cellIndex] ?? ""}</ReactMarkdown>
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <svg className={`icon ${className}`} viewBox="0 0 24 24" aria-hidden="true">
+      <path d={paths[name]} />
+    </svg>
   );
 }
 
-function MarkdownContent({ content }: { content: string }) {
+function CitationList({ citations }: { citations: CitationResponse[] }) {
+  if (!citations.length) return null;
   return (
-    <>
-      {parseMarkdownSegments(content).map((segment, index) =>
-        segment.type === "table" ? (
-          <MarkdownTable key={`table-${index}`} rows={segment.rows} />
-        ) : (
-          <ReactMarkdown key={`markdown-${index}`}>{segment.content}</ReactMarkdown>
-        ),
-      )}
-    </>
-  );
-}
-
-function EChartsFigure({ chart }: { chart: ChartArtifact }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const instance = echarts.init(container, undefined, { renderer: "canvas" });
-    instance.setOption(chart.option, true);
-    const resize = () => instance.resize();
-    const resizeObserver =
-      typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
-    resizeObserver?.observe(container);
-    window.addEventListener("resize", resize);
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", resize);
-      instance.dispose();
-    };
-  }, [chart.option]);
-
-  return (
-    <figure className="chart-card">
-      <figcaption>
-        <span>{chart.chartType}</span>
-        <strong>{chart.title}</strong>
-      </figcaption>
-      <div className="chart-canvas" ref={containerRef} />
-      {chart.sourceNotes.length ? (
-        <div className="chart-sources">
-          {chart.sourceNotes.map((note) => (
-            <span key={note}>{note}</span>
-          ))}
-        </div>
-      ) : null}
-    </figure>
-  );
-}
-
-function ChartStack({ charts }: { charts: ChartArtifact[] }) {
-  if (!charts.length) return null;
-  return (
-    <div className="chart-stack">
-      {charts.map((chart) => (
-        <EChartsFigure chart={chart} key={chart.id} />
+    <div className="citations" aria-label="引用来源">
+      {citations.map((citation, index) => (
+        <span className="citation" key={`${citation.doc_id}-${citation.page}-${index}`}>
+          {citation.doc_name || citation.doc_id}
+          {citation.page ? ` p.${citation.page}` : ""}
+        </span>
       ))}
     </div>
   );
 }
 
-function welcomeMessage(): Message {
-  return {
-    id: makeId("assistant"),
-    role: "assistant",
-    content: "上传或选择一份年报，然后开始提问。我会把答案、引用和检索路径放在同一个工作区里。",
-  };
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
 }
 
-function mapSessionSummary(session: SessionSummaryResponse, documents: DocumentRef[]): Session {
-  const selectedDocuments = validSessionDocuments(session, documents);
-  return {
-    id: session.id,
-    title: session.title,
-    documents: selectedDocuments,
-    updatedAt: formatUpdatedAt(session.updated_at),
-    messages: [welcomeMessage()],
-  };
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const disabled = !text.trim();
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onClick={async () => {
+        if (disabled) return;
+        await copyText(text);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      }}
+    >
+      <Icon name="copy" />
+      <span>{copied ? "已复制" : "复制"}</span>
+    </button>
+  );
 }
 
-function mapSessionMessage(message: SessionMessageResponse): Message {
-  const role = message.role === "user" ? "user" : "assistant";
-  const toolResults = message.tool_results ?? [];
-  return {
-    id: message.id,
-    role,
-    content: role === "assistant" ? cleanAssistantContent(message.content) : message.content,
-    citations: message.citations?.map(mapCitation) ?? [],
-    tools: toolResults.map(mapTool),
-    charts: chartsFromTools(toolResults),
-  };
+function UsageBar({ usage, status }: { usage: UsageResponse | null; status: string }) {
+  const ratio = usage?.context_ratio ?? 0;
+  const percent = Math.round(ratio * 100);
+  const tone = ratio >= 0.85 ? "danger" : ratio >= 0.6 ? "warning" : "safe";
+  const used = usage?.context_used_tokens ?? usage?.prompt_tokens ?? 0;
+  const win = usage?.context_window_tokens ?? 0;
+  const circumference = 2 * Math.PI * 7;
+  const offset = circumference - (ratio * circumference);
+
+  return (
+    <div className={`usage-pill ${tone}`} aria-label="会话上下文占用">
+      <svg className="usage-ring" viewBox="0 0 20 20" aria-hidden="true">
+        <circle className="ring-bg" cx="10" cy="10" r="7" />
+        <circle
+          className="ring-fg"
+          cx="10"
+          cy="10"
+          r="7"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+        />
+      </svg>
+      <span className="usage-percent">{percent}%</span>
+      <div className="usage-tooltip" role="tooltip">
+        <div className="usage-tooltip-row">
+          <span>上下文占用</span>
+          <strong>{used.toLocaleString()} / {win ? win.toLocaleString() : "-"} tokens</strong>
+        </div>
+        {usage?.reasoning_tokens ? (
+          <div className="usage-tooltip-row">
+            <span>reasoning</span>
+            <strong>{usage.reasoning_tokens.toLocaleString()}</strong>
+          </div>
+        ) : null}
+        {usage?.cached_tokens ? (
+          <div className="usage-tooltip-row">
+            <span>cached</span>
+            <strong>{usage.cached_tokens.toLocaleString()}</strong>
+          </div>
+        ) : null}
+        {usage?.estimated ? <div className="usage-tooltip-tag">估算</div> : null}
+        <div className="usage-tooltip-status">{status}</div>
+      </div>
+    </div>
+  );
 }
 
-function mergeSessionDetail(detail: SessionDetailResponse, documents: DocumentRef[]): Session {
-  const messages = detail.messages?.map(mapSessionMessage) ?? [];
-  return {
-    ...mapSessionSummary(detail.session, documents),
-    messages: messages.length ? messages : [welcomeMessage()],
-  };
+function ReasoningBlock({ message, now }: { message: Message; now: number }) {
+  const [open, setOpen] = useState(true);
+  const elapsed =
+    message.startedAt && (message.completedAt || now)
+      ? Math.max(1, Math.round(((message.completedAt || now) - message.startedAt) / 1000))
+      : null;
+  const isThinking = Boolean(message.startedAt && !message.completedAt && !message.content);
+
+  if (!message.reasoning && !isThinking) return null;
+
+  return (
+    <section className="assistant-reasoning">
+      <button className="reasoning-title" type="button" onClick={() => setOpen((v) => !v)}>
+        <Icon name="bolt" className="reasoning-icon" />
+        <span>
+          {isThinking ? "思考中" : "已思考"}
+          {elapsed ? `（用时 ${elapsed} 秒）` : ""}
+        </span>
+        <Icon name="chevron" className={open ? "chevron open" : "chevron"} />
+      </button>
+      {open && message.reasoning ? (
+        <div className="reasoning-body">
+          <ReactMarkdown>{message.reasoning}</ReactMarkdown>
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
-function errorMessage(error: unknown, fallback = "请求失败") {
-  return error instanceof Error ? error.message : fallback;
+function AssistantMessage({ message, now }: { message: Message; now: number }) {
+  return (
+    <article className="assistant-message">
+      <div className="assistant-inner">
+        <ReasoningBlock message={message} now={now} />
+        <section className="assistant-answer" aria-label="回答">
+          <div className="markdown-body">
+            {message.content ? (
+              <ReactMarkdown>{message.content}</ReactMarkdown>
+            ) : (
+              <span className="typing">正在生成...</span>
+            )}
+          </div>
+          <CitationList citations={message.citations} />
+        </section>
+        <div className="answer-actions" aria-label="消息操作">
+          <CopyButton text={message.content} label="复制回答" />
+        </div>
+      </div>
+    </article>
+  );
 }
 
-function isActiveDocumentJob(job: DocumentJobResponse) {
-  return job.status === "queued" || job.status === "running";
+function UserMessage({ content }: { content: string }) {
+  return (
+    <article className="user-message">
+      <div className="user-bubble">{content}</div>
+      <div className="user-actions" aria-label="用户消息操作">
+        <CopyButton text={content} label="复制问题" />
+      </div>
+    </article>
+  );
 }
 
-function jobStageLabel(stage: string) {
-  const labels: Record<string, string> = {
-    queued: "排队中",
-    parsing: "解析 PDF",
-    chunking: "生成 chunks",
-    embedding: "生成向量",
-    indexing: "写入索引",
-    done: "已完成",
-    failed: "失败",
-  };
-  return labels[stage] ?? stage;
+function Sidebar({
+  sessions,
+  activeSessionId,
+  onNewChat,
+  onSelectSession,
+  collapsed,
+  onToggle,
+}: {
+  sessions: SessionSummaryResponse[];
+  activeSessionId: string;
+  onNewChat: () => void;
+  onSelectSession: (id: string) => void;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const groups = useMemo(() => {
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const yesterday = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+    const result: { label: string; items: SessionSummaryResponse[] }[] = [];
+    let currentLabel = "";
+    let currentItems: SessionSummaryResponse[] = [];
+
+    for (const session of sessions) {
+      const date = session.updated_at.slice(0, 10);
+      let label = date;
+      if (date === today) label = "今天";
+      else if (date === yesterday) label = "昨天";
+
+      if (label !== currentLabel) {
+        if (currentItems.length) result.push({ label: currentLabel, items: currentItems });
+        currentLabel = label;
+        currentItems = [];
+      }
+      currentItems.push(session);
+    }
+    if (currentItems.length) result.push({ label: currentLabel, items: currentItems });
+    return result;
+  }, [sessions]);
+
+  return (
+    <aside className={collapsed ? "sidebar collapsed" : "sidebar"} aria-label="会话导航">
+      <div className="brand-row">
+        <div className="brand-mark">F</div>
+        <span>fintell</span>
+        <button type="button" aria-label="搜索">
+          <Icon name="search" />
+        </button>
+        <button type="button" aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"} onClick={onToggle}>
+          <Icon name="menu" />
+        </button>
+      </div>
+      <button className="new-chat" type="button" onClick={onNewChat}>
+        <Icon name="plus" />
+        <span>开启新对话</span>
+      </button>
+      <nav className="history-list" aria-label="历史对话">
+        {groups.map((group) => (
+          <div className="history-group" key={group.label}>
+            <p>{group.label}</p>
+            {group.items.map((session) => (
+              <button
+                className={`history-item${session.id === activeSessionId ? " active" : ""}`}
+                type="button"
+                key={session.id}
+                onClick={() => onSelectSession(session.id)}
+              >
+                <span>{session.title}</span>
+                <Icon name="more" />
+              </button>
+            ))}
+          </div>
+        ))}
+        {sessions.length === 0 && !collapsed && (
+          <p className="history-empty">暂无对话</p>
+        )}
+      </nav>
+    </aside>
+  );
 }
 
 function App() {
-  const [documents, setDocuments] = useState<DocumentRef[]>([]);
-  const [documentJobs, setDocumentJobs] = useState<DocumentJobResponse[]>([]);
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState("");
-  const [draft, setDraft] = useState("");
-  const [copiedMessageId, setCopiedMessageId] = useState("");
-  const [showSidebar, setShowSidebar] = useState(true);
-  const [showInspector, setShowInspector] = useState(true);
-  const [showDocumentManager, setShowDocumentManager] = useState(false);
-  const [showDocumentPicker, setShowDocumentPicker] = useState(false);
-  const [hasEntered, setHasEntered] = useState(false);
-  const [apiStatus, setApiStatus] = useState<"loading" | "connected" | "error">("loading");
-  const [apiError, setApiError] = useState("");
-  const [documentError, setDocumentError] = useState("");
-  const [isUploading, setIsUploading] = useState(false);
+  const [sessionId, setSessionId] = useState(createSessionId);
+  const [sessions, setSessions] = useState<SessionSummaryResponse[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [status, setStatus] = useState("准备开始");
   const [isSending, setIsSending] = useState(false);
-  const draftRef = useRef<HTMLTextAreaElement>(null);
-  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const [now, setNow] = useState(Date.now());
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
-  const refreshDocuments = useCallback(async () => {
-    const documentPayload = await listDocuments();
-    const loadedDocuments = documentPayload.documents.map(mapDocument);
-    setDocuments(loadedDocuments);
-    setSessions((current) =>
-      current.map((session) => ({
-        ...session,
-        documents: session.documents.filter((docId) =>
-          loadedDocuments.some((document) => document.id === docId),
-        ),
-      })),
-    );
-    return loadedDocuments;
+  const canSend = useMemo(() => input.trim().length > 0 && !isSending, [input, isSending]);
+  const chatTitle = useMemo(() => {
+    const session = sessions.find((s) => s.id === sessionId);
+    return session?.title || "新对话";
+  }, [sessions, sessionId]);
+  const sessionUsage = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].usage) return messages[i].usage;
+    }
+    return null;
+  }, [messages]);
+
+  const refreshSessions = useCallback(() => {
+    listSessions().then(setSessions).catch(() => {});
   }, []);
 
-  const refreshDocumentJobs = useCallback(async () => {
-    const payload = await listDocumentJobs();
-    setDocumentJobs(payload.jobs);
-    return payload.jobs;
-  }, []);
+  useEffect(() => {
+    refreshSessions();
+  }, [refreshSessions]);
 
-  const hydrateSession = useCallback(
-    async (sessionId: string, availableDocuments = documents) => {
-      const detail = await getSession(sessionId);
-      setSessions((current) =>
-        current.map((session) =>
-          session.id === sessionId ? mergeSessionDetail(detail, availableDocuments) : session,
-        ),
-      );
-    },
-    [documents],
-  );
+  useEffect(() => {
+    if (!isSending) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [isSending]);
 
   useEffect(() => {
     let cancelled = false;
-
-    async function bootstrap() {
-      try {
-        setApiStatus("loading");
-        const documentPayload = await listDocuments();
+    setStatus("正在恢复会话");
+    getSession(sessionId)
+      .then((detail) => {
         if (cancelled) return;
-
-        const loadedDocuments = documentPayload.documents.map(mapDocument);
-        setDocuments(loadedDocuments);
-        const jobsPayload = await listDocumentJobs();
+        setMessages(detail.messages.map(mapMessage));
+        setStatus(detail.messages.length ? "历史已恢复" : "准备开始");
+      })
+      .catch((error: Error) => {
         if (cancelled) return;
-        setDocumentJobs(jobsPayload.jobs);
-
-        const sessionPayload = await listSessions();
-        let summaries = sessionPayload.sessions;
-        if (!summaries.length) {
-          const created = await createBackendSession({
-            title: "新的财报对话",
-            doc_ids: loadedDocuments[0] ? [loadedDocuments[0].id] : [],
-          });
-          summaries = [created];
+        if (error.message.includes("Session not found") || error.message.includes("404")) {
+          setMessages([]);
+          setStatus("准备开始");
+          return;
         }
-        if (cancelled) return;
-
-        const nextSessions = summaries.map((session) => mapSessionSummary(session, loadedDocuments));
-        setSessions(nextSessions);
-        const firstSession = nextSessions[0];
-        if (firstSession) {
-          setActiveSessionId(firstSession.id);
-          const detail = await getSession(firstSession.id);
-          if (cancelled) return;
-          setSessions((current) =>
-            current.map((session) =>
-              session.id === firstSession.id
-                ? mergeSessionDetail(detail, loadedDocuments)
-                : session,
-            ),
-          );
-        }
-        setApiStatus("connected");
-        setApiError("");
-      } catch (error) {
-        if (cancelled) return;
-        const message = errorMessage(error, "API 连接失败");
-        const localSession: Session = {
-          id: "local-preview",
-          title: "FastAPI 未连接",
-          documents: [],
-          updatedAt: "刚刚",
-          messages: [
-            {
-              id: "local-preview-message",
-              role: "assistant",
-              content: `暂时无法连接后端：${message}`,
-              tools: [{ id: "api", name: "api", status: "idle", detail: "等待 FastAPI 可用" }],
-            },
-          ],
-        };
-        setSessions([localSession]);
-        setActiveSessionId(localSession.id);
-        setApiStatus("error");
-        setApiError(message);
-      }
-    }
-
-    void bootstrap();
+        setStatus(`加载失败：${error.message}`);
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null,
-    [activeSessionId, sessions],
-  );
-
-  const activeDocumentIds = activeSession
-    ? activeSession.documents.filter((docId) => documents.some((document) => document.id === docId))
-    : [];
-  const activeDocuments = activeDocumentIds
-    .map((docId) => documents.find((document) => document.id === docId))
-    .filter((document): document is DocumentRef => Boolean(document));
-  const activeDocumentLabel = formatDocumentSelection(activeDocumentIds, documents);
-  const hasActiveJob = documentJobs.some(isActiveDocumentJob);
-  const visibleMessages = activeSession?.messages.length ? activeSession.messages : [welcomeMessage()];
-  const lastAssistant = [...visibleMessages].reverse().find((message) => message.role === "assistant");
-  const citations = lastAssistant?.citations ?? [];
-  const tools = lastAssistant?.tools?.length
-    ? lastAssistant.tools
-    : [{ id: "idle-search", name: "search_reports", status: "idle" as const, detail: "等待下一次检索" }];
+  }, [sessionId]);
 
   useEffect(() => {
-    if (!hasEntered || !documentJobs.some(isActiveDocumentJob)) return;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const jobs = await refreshDocumentJobs();
-          if (!jobs.some(isActiveDocumentJob)) {
-            await refreshDocuments();
-          }
-          setApiStatus("connected");
-          setDocumentError("");
-        } catch (error) {
-          setDocumentError(errorMessage(error, "文档状态刷新失败"));
-        }
-      })();
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [documentJobs, hasEntered, refreshDocumentJobs, refreshDocuments]);
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, status]);
 
-  async function selectSession(sessionId: string) {
-    setActiveSessionId(sessionId);
-    setDraft("");
-    try {
-      await hydrateSession(sessionId);
-      setApiStatus("connected");
-      setApiError("");
-    } catch (error) {
-      setApiStatus("error");
-      setApiError(errorMessage(error));
-    }
-  }
+  const updateAssistant = useCallback((assistantId: string, update: (m: Message) => Message) => {
+    setMessages((items) => items.map((item) => (item.id === assistantId ? update(item) : item)));
+  }, []);
 
-  async function createSession() {
-    try {
-      const created = await createBackendSession({
-        title: "新的财报对话",
-        doc_ids: documents[0] ? [documents[0].id] : [],
-      });
-      const nextSession = mapSessionSummary(created, documents);
-      setSessions((current) => [nextSession, ...current]);
-      setActiveSessionId(nextSession.id);
-      setDraft("");
-      setApiStatus("connected");
-      setApiError("");
-    } catch (error) {
-      setApiStatus("error");
-      setApiError(errorMessage(error));
-    }
-  }
+  const switchSession = useCallback((id: string) => {
+    setSessionId(id);
+    setInput("");
+    setStatus("准备开始");
+  }, []);
 
-  async function deleteSession(id: string) {
-    if (sessions.length <= 1) return;
-    try {
-      await deleteBackendSession(id);
-      const remaining = sessions.filter((session) => session.id !== id);
-      setSessions(remaining);
-      if (id === activeSessionId && remaining[0]) {
-        setActiveSessionId(remaining[0].id);
-        await hydrateSession(remaining[0].id);
-      }
-      setApiStatus("connected");
-      setApiError("");
-    } catch (error) {
-      setApiStatus("error");
-      setApiError(errorMessage(error));
-    }
-  }
+  const startNewChat = useCallback(() => {
+    const nextId = createSessionId();
+    setSessionId(nextId);
+    setMessages([]);
+    setInput("");
+    setStatus("准备开始");
+  }, []);
 
-  async function updateDocuments(documentIds: string[]) {
-    if (!activeSession) return;
-    const sessionId = activeSession.id;
-    const available = new Set(documents.map((document) => document.id));
-    const nextDocumentIds = normalizeDocumentIds(documentIds).filter((docId) => available.has(docId));
-    setSessions((current) =>
-      current.map((session) =>
-        session.id === sessionId ? { ...session, documents: nextDocumentIds, updatedAt: "刚刚" } : session,
-      ),
-    );
-    try {
-      const updated = await updateBackendSession(sessionId, {
-        doc_id: nextDocumentIds[0] ?? null,
-        doc_ids: nextDocumentIds,
-      });
-      setSessions((current) =>
-        current.map((session) =>
-          session.id === sessionId
-            ? {
-                ...session,
-                title: updated.title,
-                documents: validSessionDocuments(updated, documents),
-                updatedAt: formatUpdatedAt(updated.updated_at),
-              }
-            : session,
-        ),
-      );
-      setApiStatus("connected");
-      setApiError("");
-    } catch (error) {
-      setApiStatus("error");
-      setApiError(errorMessage(error));
-    }
-  }
+  const submit = useCallback(
+    async (event?: React.FormEvent) => {
+      event?.preventDefault();
+      const question = input.trim();
+      if (!question || isSending) return;
 
-  function toggleDocument(documentId: string) {
-    const selected = new Set(activeDocumentIds);
-    if (selected.has(documentId)) {
-      selected.delete(documentId);
-    } else {
-      selected.add(documentId);
-    }
-    void updateDocuments(Array.from(selected));
-  }
-
-  async function copyMessage(message: Message) {
-    const content = message.content.trim();
-    if (!content) return;
-
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(content);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = content;
-        textarea.setAttribute("readonly", "");
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textarea);
-      }
-      setCopiedMessageId(message.id);
-      window.setTimeout(() => {
-        setCopiedMessageId((currentId) => (currentId === message.id ? "" : currentId));
-      }, 1400);
-    } catch (error) {
-      setApiError(errorMessage(error, "复制失败，请重试"));
-    }
-  }
-
-  async function sendMessage() {
-    const session = activeSession;
-    const question = (draftRef.current?.value ?? draft).trim();
-    if (!session || !question || isSending || !activeDocumentIds.length) return;
-
-    const sessionId = session.id;
-    const userMessage: Message = { id: makeId("user"), role: "user", content: question };
-    const assistantId = makeId("assistant");
-    const assistantMessage: Message = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      tools: [statusTool("准备请求 FastAPI")],
-    };
-    const nextTitle = session.title === "新的财报对话" ? question.slice(0, 18) : session.title;
-
-    setSessions((current) =>
-      current.map((item) =>
-        item.id === sessionId
-          ? {
-              ...item,
-              title: nextTitle,
-              updatedAt: "刚刚",
-              messages: [...item.messages, userMessage, assistantMessage],
-            }
-          : item,
-      ),
-    );
-    if (draftRef.current) {
-      draftRef.current.value = "";
-    }
-    setDraft("");
-    setIsSending(true);
-    setApiError("");
-
-    const updateAssistant = (updater: (message: Message) => Message) => {
-      setSessions((current) =>
-        current.map((item) =>
-          item.id === sessionId
-            ? {
-                ...item,
-                updatedAt: "刚刚",
-                messages: item.messages.map((message) =>
-                  message.id === assistantId ? updater(message) : message,
-                ),
-              }
-            : item,
-        ),
-      );
-    };
-
-    try {
-      await streamChat(
-        {
-          question,
-          session_id: sessionId,
-          top_k: 5,
-          doc_id: activeDocumentIds[0] ?? null,
-          doc_ids: activeDocumentIds,
-          include_tool_results: true,
-        },
-        (event) => {
-          if (event.event === "status") {
-            updateAssistant((message) => {
-              const completedTools = (message.tools ?? []).filter((tool) => tool.status === "done");
-              return { ...message, tools: [statusTool(event.data.message), ...completedTools] };
-            });
-          }
-          if (event.event === "tool_result") {
-            updateAssistant((message) => {
-              const nextTool = mapTool(event.data);
-              const nextChart = chartFromTool(event.data);
-              const existingTools = (message.tools ?? []).filter((tool) => tool.id !== nextTool.id);
-              const existingCharts = (message.charts ?? []).filter((chart) => chart.id !== nextChart?.id);
-              return {
-                ...message,
-                tools: [...existingTools, nextTool],
-                charts: nextChart ? [...existingCharts, nextChart] : message.charts,
-              };
-            });
-          }
-          if (event.event === "answer_delta") {
-            updateAssistant((message) => ({
-              ...message,
-              content: `${message.content}${event.data.content}`,
-            }));
-          }
-          if (event.event === "final") {
-            const toolResults = event.data.tool_results ?? [];
-            updateAssistant((message) => ({
-              ...message,
-              content: cleanAssistantContent(event.data.answer || message.content || "没有返回答案。"),
-              citations: event.data.citations?.map(mapCitation) ?? [],
-              tools: toolResults.map(mapTool) ?? message.tools ?? [],
-              charts: chartsFromTools(toolResults),
-            }));
-          }
-          if (event.event === "error") {
-            setApiError(event.data.message || "流式请求失败");
-          }
-        },
-      );
-      setApiStatus("connected");
-      setApiError("");
-    } catch (error) {
-      const message = errorMessage(error);
-      setApiStatus("error");
-      setApiError(message);
-      updateAssistant(() => ({
+      const startedAt = Date.now();
+      const userMessage: Message = {
+        id: makeId("user"),
+        role: "user",
+        content: question,
+        citations: [],
+        reasoning: "",
+        usage: null,
+      };
+      const assistantId = makeId("assistant");
+      const assistantMessage: Message = {
         id: assistantId,
         role: "assistant",
-        content: `请求 FastAPI 失败：${message}`,
-        tools: [{ id: "api-error", name: "chat/stream", status: "idle", detail: "后端请求未完成" }],
-        charts: [],
-      }));
-    } finally {
-      setIsSending(false);
-    }
-  }
+        content: "",
+        citations: [],
+        reasoning: "",
+        usage: null,
+        startedAt,
+      };
 
-  async function handleUploadFile(file: File | undefined) {
-    if (!file) return;
-    setShowDocumentManager(true);
-    setIsUploading(true);
-    setDocumentError("");
-    try {
-      const job = await uploadDocument(file);
-      setDocumentJobs((current) => [job, ...current.filter((item) => item.job_id !== job.job_id)]);
-      setApiStatus("connected");
-    } catch (error) {
-      setDocumentError(errorMessage(error, "上传失败"));
-      setApiStatus("error");
-    } finally {
-      setIsUploading(false);
-      if (uploadInputRef.current) {
-        uploadInputRef.current.value = "";
+      setInput("");
+      setIsSending(true);
+      setNow(startedAt);
+      setStatus("提交问题");
+      setMessages((items) => [...items, userMessage, assistantMessage]);
+
+      try {
+        await streamChat({ question, session_id: sessionId }, (event) => {
+          if (event.event === "status") {
+            setStatus(event.data.message);
+            return;
+          }
+          if (event.event === "usage") {
+            updateAssistant(assistantId, (m) => ({ ...m, usage: event.data }));
+            return;
+          }
+          if (event.event === "reasoning_delta") {
+            updateAssistant(assistantId, (m) => ({
+              ...m,
+              reasoning: m.reasoning + event.data.content,
+            }));
+            return;
+          }
+          if (event.event === "answer_delta") {
+            updateAssistant(assistantId, (m) => ({
+              ...m,
+              content: m.content + event.data.content,
+            }));
+            return;
+          }
+          if (event.event === "final") {
+            updateAssistant(assistantId, (m) => ({
+              ...m,
+              content: event.data.answer,
+              citations: event.data.citations,
+              reasoning: event.data.reasoning_content || m.reasoning,
+              usage: event.data.usage ?? m.usage,
+              completedAt: Date.now(),
+            }));
+            setStatus("完成");
+            refreshSessions();
+          }
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "请求失败";
+        setStatus(`出错：${msg}`);
+        updateAssistant(assistantId, (item) => ({
+          ...item,
+          content: "请求失败，请稍后重试。",
+          completedAt: Date.now(),
+        }));
+      } finally {
+        setIsSending(false);
       }
-    }
-  }
-
-  async function deleteManagedDocument(documentId: string) {
-    if (hasActiveJob) return;
-    const document = documents.find((item) => item.id === documentId);
-    const confirmed = window.confirm(`删除 ${document?.name ?? documentId} 的运行产物和索引？原 PDF 会保留。`);
-    if (!confirmed) return;
-    setDocumentError("");
-    try {
-      await deleteBackendDocument(documentId);
-      const loadedDocuments = await refreshDocuments();
-      const sessionPayload = await listSessions();
-      setSessions((current) =>
-        sessionPayload.sessions.map((session) => {
-          const existing = current.find((item) => item.id === session.id);
-          return {
-            ...mapSessionSummary(session, loadedDocuments),
-            messages: existing?.messages ?? [welcomeMessage()],
-          };
-        }),
-      );
-      setApiStatus("connected");
-    } catch (error) {
-      setDocumentError(errorMessage(error, "删除文档失败"));
-      setApiStatus("error");
-    }
-  }
-
-  if (!hasEntered) {
-    return (
-      <main className="welcome">
-        <div className="welcome-shell">
-          <section className="welcome-copy">
-            <div className="welcome-brand">
-              <div className="welcome-mark">
-                <BarChart3 size={19} />
-              </div>
-              <span>Fintell</span>
-            </div>
-            <p className="welcome-kicker">Financial intelligence workspace</p>
-            <h1>把年报问答，放回清晰的证据里。</h1>
-            <p className="welcome-lede">
-              面向财报检索、表格指标和引用追踪的轻量研究工作台。进入后可以新建会话、切换文档，并查看每次回答的来源。
-            </p>
-            <button className="enter-button" onClick={() => setHasEntered(true)}>
-              进入工作台
-              <ArrowRight size={18} />
-            </button>
-            <div className="welcome-meta">
-              <div>
-                <strong>{documents.length}</strong>
-                <span>indexed reports</span>
-              </div>
-              <div>
-                <strong>5</strong>
-                <span>retrieval top k</span>
-              </div>
-              <div>
-                <strong>{sessions.length}</strong>
-                <span>saved sessions</span>
-              </div>
-            </div>
-          </section>
-
-          <section className="welcome-stage" aria-hidden="true">
-            <div className="report-sheet secondary">
-              <div className="sheet-head">
-                <div className="sheet-title">Cash Flow</div>
-                <div className="sheet-tag">verified</div>
-              </div>
-              {Array.from({ length: 7 }).map((_, index) => (
-                <div className="sheet-row" key={`secondary-${index}`}>
-                  <span />
-                  <span />
-                  <span />
-                </div>
-              ))}
-              <div className="sheet-chart">
-                <span className="h-14" />
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-            </div>
-            <div className="report-sheet">
-              <div className="sheet-head">
-                <div className="sheet-title">Annual Report</div>
-                <div className="sheet-tag">p.12</div>
-              </div>
-              {Array.from({ length: 8 }).map((_, index) => (
-                <div className="sheet-row" key={`primary-${index}`}>
-                  <span />
-                  <span />
-                  <span />
-                </div>
-              ))}
-              <div className="sheet-chart">
-                <span className="h-16" />
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-            </div>
-          </section>
-        </div>
-      </main>
-    );
-  }
+    },
+    [input, isSending, sessionId, updateAssistant, refreshSessions],
+  );
 
   return (
-    <main className="min-h-screen bg-paper text-ink">
-      <div
-        className={`grid min-h-screen transition-[grid-template-columns] duration-300 ${
-          showSidebar ? "grid-cols-[288px_minmax(0,1fr)]" : "grid-cols-[72px_minmax(0,1fr)]"
-        } ${
-          showSidebar
-            ? showInspector
-              ? "lg:grid-cols-[304px_minmax(0,1fr)_360px]"
-              : "lg:grid-cols-[304px_minmax(0,1fr)_40px]"
-            : showInspector
-              ? "lg:grid-cols-[72px_minmax(0,1fr)_360px]"
-              : "lg:grid-cols-[72px_minmax(0,1fr)_40px]"
-        }`}
-      >
-        <aside className={`sidebar ${showSidebar ? "is-open" : "is-collapsed"}`}>
-          <button
-            className="sidebar-toggle"
-            aria-label={showSidebar ? "收起会话栏" : "展开会话栏"}
-            onClick={() => setShowSidebar((value) => !value)}
-            type="button"
-          >
-            <span className="sr-only">{showSidebar ? "收起会话栏" : "展开会话栏"}</span>
-            {showSidebar ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
-          </button>
-          <div className="brand">
-            <div className="brand-mark">
-              <BarChart3 size={18} />
-            </div>
-            <div className="brand-copy">
-              <div className="brand-name">Fintell</div>
-              <div className="brand-caption">Financial intelligence workspace</div>
-            </div>
+    <main className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+      <Sidebar
+        sessions={sessions}
+        activeSessionId={sessionId}
+        onNewChat={startNewChat}
+        onSelectSession={switchSession}
+        collapsed={sidebarCollapsed}
+        onToggle={() => setSidebarCollapsed((v) => !v)}
+      />
+      <section className="chat-main" aria-label="聊天">
+        <header className="topbar">
+          <div>
+            <h1>{chatTitle}</h1>
           </div>
+          <span className="runtime-status">{status}</span>
+        </header>
 
-          <button className="new-chat" onClick={() => void createSession()} aria-label="新建对话">
-            <MessageSquarePlus size={17} />
-            <span className="new-chat-label">新建对话</span>
-          </button>
-
-          <div className="sidebar-section">
-            <div className="section-label">Sessions</div>
-            <div className="session-list">
-              {sessions.map((session) => (
-                <button
-                  key={session.id}
-                  className={`session-item group ${session.id === activeSession?.id ? "is-active" : ""}`}
-                  onClick={() => void selectSession(session.id)}
-                >
-                  <span>
-                    <strong>{session.title}</strong>
-                    <small>
-                      {session.updatedAt} ·{" "}
-                      {formatDocumentSelection(session.documents, documents)}
-                    </small>
-                  </span>
-                  {sessions.length > 1 && (
-                    <Trash2
-                      className="delete-icon"
-                      size={15}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void deleteSession(session.id);
-                      }}
-                    />
-                  )}
-                </button>
-              ))}
+        <div className="message-list" ref={listRef}>
+          {messages.length === 0 ? (
+            <div className="empty-state">
+              <h2>开始对话</h2>
+              <p>输入任何问题，开始聊天</p>
             </div>
-          </div>
+          ) : (
+            messages.map((message) =>
+              message.role === "assistant" ? (
+                <AssistantMessage message={message} now={now} key={message.id} />
+              ) : (
+                <UserMessage content={message.content} key={message.id} />
+              ),
+            )
+          )}
+        </div>
 
-          <div className="sidebar-footer">
-            <Sparkles size={16} />
-            <span>{apiStatus === "connected" ? "SQLite sessions" : "API pending"}</span>
-          </div>
-        </aside>
-
-        <section className="workspace">
-          <header className="topbar">
-            <div className="topbar-title">
-              <p className="eyebrow">当前工作区</p>
-              <h1>{activeSession?.title ?? "正在加载会话"}</h1>
-            </div>
-            <div className="topbar-actions">
-              <div className="doc-picker">
-                <FileText size={16} />
-                <button
-                  className="doc-picker-trigger"
-                  type="button"
-                  onClick={() => setShowDocumentPicker((value) => !value)}
-                  disabled={!activeSession || !documents.length}
-                >
-                  <span>{documents.length ? activeDocumentLabel : "暂无文档"}</span>
-                  <small>{activeDocumentIds.length ? `${activeDocumentIds.length} 份` : "未选择"}</small>
-                  <ChevronDown size={15} />
-                </button>
-                {showDocumentPicker ? (
-                  <div className="doc-picker-menu">
-                    <div className="doc-picker-tools">
-                      <button type="button" onClick={() => void updateDocuments(documents.map((item) => item.id))}>
-                        全选
-                      </button>
-                      <button type="button" onClick={() => void updateDocuments([])}>
-                        清空
-                      </button>
-                    </div>
-                    <div className="doc-picker-list">
-                      {documents.map((document) => {
-                        const checked = activeDocumentIds.includes(document.id);
-                        return (
-                          <button
-                            type="button"
-                            className={`doc-picker-option ${checked ? "is-selected" : ""}`}
-                            key={document.id}
-                            onClick={() => toggleDocument(document.id)}
-                          >
-                            <span className="check-box">{checked ? <Check size={13} /> : null}</span>
-                            <span>
-                              <strong>{document.name}</strong>
-                              <small>{document.chunkCount ?? "?"} chunks</small>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-              <button
-                className="icon-button"
-                aria-label="管理文档"
-                onClick={() => setShowDocumentManager(true)}
-              >
-                <UploadCloud size={18} />
-              </button>
-              <button
-                className="icon-button lg:hidden"
-                aria-label="切换证据面板"
-                onClick={() => setShowInspector((value) => !value)}
-              >
-                <PanelRightOpen size={18} />
-              </button>
-            </div>
-          </header>
-
-          <div className="query-strip">
-            <Search size={17} />
-            <span className="query-doc-filter">文档过滤：{activeDocumentLabel}</span>
-            <span className="divider" />
-            <span>{activeDocuments.reduce((sum, document) => sum + (document.chunkCount ?? 0), 0)} chunks</span>
-            <span className="divider" />
-            <span>Top K 预设：5</span>
-            <span className="divider" />
-            <span>{apiStatus === "connected" ? "API 已连接" : apiStatus === "loading" ? "API 连接中" : "API 异常"}</span>
-            {hasActiveJob ? (
-              <>
-                <span className="divider" />
-                <span>文档处理中</span>
-              </>
-            ) : null}
-          </div>
-
-          <div className="messages">
-            {visibleMessages.map((message, index) => (
-              <article
-                key={message.id}
-                className={`message ${message.role === "user" ? "is-user" : "is-assistant"}`}
-                style={{ animationDelay: `${index * 60}ms` }}
-              >
-                <div className="avatar" aria-label={message.role === "user" ? "用户" : "Fintell"}>
-                  {message.role === "user" ? <UserRound size={17} /> : <Sparkles size={16} />}
-                </div>
-                <div className="bubble">
-                  <button
-                    className={`copy-message ${copiedMessageId === message.id ? "is-copied" : ""}`}
-                    type="button"
-                    aria-label={copiedMessageId === message.id ? "已复制" : "复制消息"}
-                    title={copiedMessageId === message.id ? "已复制" : "复制消息"}
-                    disabled={!message.content.trim()}
-                    onClick={() => void copyMessage(message)}
-                  >
-                    {copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}
-                  </button>
-                  {message.content ? <MarkdownContent content={message.content} /> : <p>正在生成...</p>}
-                  {message.charts?.length ? <ChartStack charts={message.charts} /> : null}
-                  {message.citations?.length ? (
-                    <div className="citation-row">
-                      {message.citations.map((citation) => (
-                        <span key={`${citation.docId}-${citation.page ?? "none"}`}>
-                          {citation.docName} · p.{citation.page ?? "?"}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <div className="composer-wrap">
-            <form
-              className="composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void sendMessage();
-              }}
-            >
-              <textarea
-                ref={draftRef}
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void sendMessage();
-                  }
-                }}
-                placeholder={
-                  !activeDocumentIds.length
-                    ? "请先上传并选择至少一份年报..."
-                    : isSending
-                      ? "正在流式接收回答..."
-                      : "询问营收、利润、现金流、风险因素，或跨公司对比..."
+        <div className="composer-dock">
+          <UsageBar usage={sessionUsage} status={status} />
+          <form className="composer" onSubmit={submit}>
+            <textarea
+              aria-label="输入问题"
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void submit();
                 }
-                rows={2}
-                disabled={isSending || !activeSession || !activeDocumentIds.length}
-              />
-              <button
-                className="send-button"
-                type="submit"
-                aria-label="发送问题"
-                disabled={isSending || !activeSession || !activeDocumentIds.length}
-              >
-                <ArrowUp size={18} />
-              </button>
-            </form>
-            {apiError ? <div className="api-error">{apiError}</div> : null}
-          </div>
-        </section>
-
-        <aside className={`inspector ${showInspector ? "is-open" : "is-collapsed"}`}>
-          <button
-            className="collapse-button"
-            aria-label={showInspector ? "折叠证据面板" : "展开证据面板"}
-            onClick={() => setShowInspector((value) => !value)}
-          >
-            <span className="sr-only">{showInspector ? "折叠证据面板" : "展开证据面板"}</span>
-            {showInspector ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-          </button>
-
-          <div className="inspector-content">
-            <div className="inspector-head">
-              <p className="eyebrow">Evidence</p>
-              <h2>引用与检索路径</h2>
-            </div>
-
-            <section className="inspector-block">
-              <div className="block-title">引用来源</div>
-              <div className="source-list">
-                {citations.length ? (
-                  citations.map((citation) => (
-                    <div className="source-item" key={`${citation.docId}-${citation.page ?? "none"}`}>
-                      <FileText size={16} />
-                      <span>
-                        <strong>{citation.docName}</strong>
-                        <small>page {citation.page ?? "?"}</small>
-                      </span>
-                    </div>
-                  ))
-                ) : (
-                  <p className="empty-copy">暂无引用。</p>
-                )}
-              </div>
-            </section>
-
-            <section className="inspector-block">
-              <div className="block-title">工具轨迹</div>
-              <div className="timeline">
-                {tools.map((tool, index) => {
-                  const callNumber = tools.slice(0, index + 1).filter((item) => item.status === "done").length;
-                  return (
-                    <div className={`tool-step ${tool.status === "done" ? "is-expanded" : ""}`} key={tool.id}>
-                      <span className={`dot ${tool.status}`} />
-                      <div className="tool-step-body">
-                        <div className="tool-step-head">
-                          <strong>{tool.status === "done" ? `调用 ${callNumber}` : tool.name}</strong>
-                          <small>{tool.detail}</small>
-                        </div>
-                        {tool.status === "done" ? (
-                          <div className="tool-step-detail">
-                            <span className="tool-name">{tool.name}</span>
-                            <dl>
-                              {tool.name === "create_chart" ? (
-                                <>
-                                  <div>
-                                    <dt>title</dt>
-                                    <dd>{tool.chartTitle ?? "未命名图表"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>type</dt>
-                                    <dd>{tool.chartType ?? "chart"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>series</dt>
-                                    <dd>{tool.seriesCount ?? "未知"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>points</dt>
-                                    <dd>{tool.dataPointCount ?? "未知"}</dd>
-                                  </div>
-                                </>
-                              ) : tool.name === "search_tables" ? (
-                                <>
-                                  <div>
-                                    <dt>query</dt>
-                                    <dd>{tool.query ?? "未提供"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>type</dt>
-                                    <dd>{tool.statementType ?? "自动"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>tables</dt>
-                                    <dd>{tool.resultCount ?? "未知"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>docs</dt>
-                                    <dd>{formatToolDocumentScope(tool, documents)}</dd>
-                                  </div>
-                                </>
-                              ) : tool.name === "get_table" ? (
-                                <>
-                                  <div>
-                                    <dt>table</dt>
-                                    <dd>{tool.tableId ?? "未提供"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>title</dt>
-                                    <dd>{tool.tableTitle ?? (tool.tableFound ? "未命名表格" : "未找到")}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>size</dt>
-                                    <dd>{tool.tableSize ?? "未知"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>page</dt>
-                                    <dd>{tool.tablePage ?? "未知"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>docs</dt>
-                                    <dd>{formatToolDocumentScope(tool, documents)}</dd>
-                                  </div>
-                                </>
-                              ) : (
-                                <>
-                                  <div>
-                                    <dt>query</dt>
-                                    <dd>{tool.query ?? "未提供"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>top_k</dt>
-                                    <dd>{tool.topK ?? "默认"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>results</dt>
-                                    <dd>{tool.resultCount ?? "未知"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>docs</dt>
-                                    <dd>{formatToolDocumentScope(tool, documents)}</dd>
-                                  </div>
-                                </>
-                              )}
-                            </dl>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="metric-band">
-              <div>
-                <strong>5</strong>
-                <span>Top K</span>
-              </div>
-              <div>
-                <strong>{tools.filter((tool) => tool.status === "done").length}</strong>
-                <span>tools</span>
-              </div>
-              <div>
-                <strong>{citations.length}</strong>
-                <span>refs</span>
-              </div>
-            </section>
-          </div>
-        </aside>
-        {showDocumentManager ? (
-          <div className="document-manager-shell" role="dialog" aria-modal="true">
-            <div className="document-manager-backdrop" onClick={() => setShowDocumentManager(false)} />
-            <section className="document-manager">
-              <header className="document-manager-head">
-                <div>
-                  <p className="eyebrow">Documents</p>
-                  <h2>文档管理</h2>
-                </div>
-                <button
-                  className="icon-button"
-                  aria-label="关闭文档管理"
-                  onClick={() => setShowDocumentManager(false)}
-                >
-                  <X size={17} />
-                </button>
-              </header>
-
-              <div className="upload-zone">
-                <input
-                  ref={uploadInputRef}
-                  className="sr-only"
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  onChange={(event) => void handleUploadFile(event.target.files?.[0])}
-                />
-                <button
-                  className="upload-action"
-                  onClick={() => uploadInputRef.current?.click()}
-                  disabled={isUploading || hasActiveJob}
-                >
-                  <UploadCloud size={18} />
-                  {isUploading ? "上传中" : hasActiveJob ? "处理中" : "上传 PDF"}
-                </button>
-                <button
-                  className="icon-button"
-                  aria-label="刷新文档状态"
-                  onClick={() => {
-                    void refreshDocuments();
-                    void refreshDocumentJobs();
-                  }}
-                >
-                  <RefreshCw size={17} />
-                </button>
-              </div>
-
-              {documentError ? <div className="api-error">{documentError}</div> : null}
-
-              <section className="document-panel-block">
-                <div className="block-title">任务状态</div>
-                <div className="job-list">
-                  {documentJobs.length ? (
-                    documentJobs.slice(0, 5).map((job) => (
-                      <div className={`job-item ${job.status}`} key={job.job_id}>
-                        <span className={`dot ${job.status === "succeeded" ? "done" : isActiveDocumentJob(job) ? "running" : "idle"}`} />
-                        <span>
-                          <strong>{job.file_name}</strong>
-                          <small>
-                            {job.status === "failed"
-                              ? job.error || "处理失败"
-                              : `${jobStageLabel(job.stage)} · ${job.doc_name ?? "等待生成文档"}`}
-                          </small>
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="empty-copy">暂无处理任务。</p>
-                  )}
-                </div>
-              </section>
-
-              <section className="document-panel-block">
-                <div className="block-title">已索引文档</div>
-                <div className="managed-document-list">
-                  {documents.length ? (
-                    documents.map((document) => (
-                      <div className="managed-document" key={document.id}>
-                        <FileText size={17} />
-                        <span>
-                          <strong>{document.name}</strong>
-                          <small>{document.chunkCount ?? "?"} chunks</small>
-                        </span>
-                        <button
-                          className="managed-delete"
-                          onClick={() => void deleteManagedDocument(document.id)}
-                          disabled={hasActiveJob}
-                          aria-label={`删除 ${document.name}`}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="empty-copy">还没有索引文档。上传 PDF 后，完成解析即可在会话中选择。</p>
-                  )}
-                </div>
-              </section>
-            </section>
-          </div>
-        ) : null}
-      </div>
+              }}
+              placeholder="输入消息..."
+              rows={1}
+            />
+            <button type="submit" disabled={!canSend}>
+              {isSending ? "生成中" : "发送"}
+            </button>
+          </form>
+        </div>
+      </section>
     </main>
   );
 }

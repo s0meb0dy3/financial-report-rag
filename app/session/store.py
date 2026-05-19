@@ -1,21 +1,10 @@
 import json
 import os
 import sqlite3
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
-
-from app.domain import ConversationState
-from app.messages import (
-    AssistantMessage,
-    BaseMessage,
-    SystemMessage,
-    ToolCall,
-    ToolResultMessage,
-    UserMessage,
-)
+from typing import Any
 
 
 DEFAULT_SESSION_DB_PATH = "data/sessions.sqlite3"
@@ -64,6 +53,24 @@ def _doc_ids_from_json(value: str | None, *, fallback_doc_id: str | None = None)
     return _normalize_doc_ids(fallback_doc_id=fallback_doc_id)
 
 
+def _json_list(value: str) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+
+def _json_object(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 @dataclass
 class SessionSummary:
     id: str
@@ -80,106 +87,16 @@ class SessionTurn:
     session_id: str
     user_content: str
     assistant_content: str
+    reasoning_content: str
     citations: list[dict[str, Any]]
     tool_results: list[dict[str, Any]]
+    usage: dict[str, Any] | None
     created_at: str
 
 
-class SessionStore(Protocol):
-    def load(self, session_id: str) -> ConversationState:
-        ...
-
-    def save(self, session_id: str, state: ConversationState) -> None:
-        ...
-
-
-class InMemorySessionStore:
-    def __init__(self):
-        self._states: dict[str, ConversationState] = {}
-
-    def load(self, session_id: str) -> ConversationState:
-        state = self._states.get(session_id)
-        if state is None:
-            return ConversationState()
-        return deepcopy(state)
-
-    def save(self, session_id: str, state: ConversationState) -> None:
-        self._states[session_id] = deepcopy(state)
-
-
-def _message_to_dict(message: BaseMessage) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "role": message.role,
-        "content": message.content,
-        "created_at": message.created_at,
-    }
-    if isinstance(message, AssistantMessage):
-        payload["tool_calls"] = [
-            {
-                "tool_name": tool_call.tool_name,
-                "arguments": tool_call.arguments,
-                "tool_call_id": tool_call.tool_call_id,
-            }
-            for tool_call in message.tool_calls
-        ]
-    if isinstance(message, ToolResultMessage):
-        payload["tool_name"] = message.tool_name
-        payload["tool_call_id"] = message.tool_call_id
-        payload["output"] = message.output
-    return payload
-
-
-def _message_from_dict(payload: dict[str, Any]) -> BaseMessage:
-    role = payload.get("role")
-    common = {
-        "content": payload.get("content", ""),
-        "created_at": payload.get("created_at", _now()),
-    }
-    if role == "system":
-        return SystemMessage(**common)
-    if role == "user":
-        return UserMessage(**common)
-    if role == "assistant":
-        return AssistantMessage(
-            **common,
-            tool_calls=[
-                ToolCall(
-                    tool_name=item.get("tool_name", ""),
-                    arguments=item.get("arguments", {}),
-                    tool_call_id=item.get("tool_call_id", ""),
-                )
-                for item in payload.get("tool_calls", [])
-                if isinstance(item, dict)
-            ],
-        )
-    if role == "tool":
-        return ToolResultMessage(
-            **common,
-            tool_name=payload.get("tool_name", ""),
-            tool_call_id=payload.get("tool_call_id", ""),
-            output=payload.get("output", {}),
-        )
-    raise ValueError(f"Unsupported persisted message role: {role!r}")
-
-
-def _state_to_json(state: ConversationState) -> str:
-    return json.dumps(
-        {"messages": [_message_to_dict(message) for message in state.messages]},
-        ensure_ascii=False,
-    )
-
-
-def _state_from_json(content: str) -> ConversationState:
-    payload = json.loads(content)
-    messages = [
-        _message_from_dict(item)
-        for item in payload.get("messages", [])
-        if isinstance(item, dict)
-    ]
-    return ConversationState(messages=messages)
-
-
 class SQLiteSessionStore:
+    """SQLite-backed chat history store for the simplified single chat box."""
+
     @classmethod
     def from_env(cls) -> "SQLiteSessionStore":
         return cls(os.environ.get("SESSION_DB_PATH", DEFAULT_SESSION_DB_PATH))
@@ -207,26 +124,22 @@ class SQLiteSessionStore:
                     updated_at TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS session_states (
-                    session_id TEXT PRIMARY KEY,
-                    state_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
-                );
-
                 CREATE TABLE IF NOT EXISTS session_turns (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
                     user_content TEXT NOT NULL,
                     assistant_content TEXT NOT NULL,
+                    reasoning_content TEXT NOT NULL DEFAULT '',
                     citations_json TEXT NOT NULL,
                     tool_results_json TEXT NOT NULL,
+                    usage_json TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
                 );
                 """
             )
         self._ensure_doc_ids_column()
+        self._ensure_turn_metadata_columns()
         self._backfill_doc_ids_json()
 
     def _ensure_doc_ids_column(self) -> None:
@@ -235,6 +148,17 @@ class SQLiteSessionStore:
             columns = {row["name"] for row in rows}
             if "doc_ids_json" not in columns:
                 connection.execute("ALTER TABLE sessions ADD COLUMN doc_ids_json TEXT")
+
+    def _ensure_turn_metadata_columns(self) -> None:
+        with self._connect() as connection:
+            rows = connection.execute("PRAGMA table_info(session_turns)").fetchall()
+            columns = {row["name"] for row in rows}
+            if "reasoning_content" not in columns:
+                connection.execute(
+                    "ALTER TABLE session_turns ADD COLUMN reasoning_content TEXT NOT NULL DEFAULT ''"
+                )
+            if "usage_json" not in columns:
+                connection.execute("ALTER TABLE session_turns ADD COLUMN usage_json TEXT")
 
     def _backfill_doc_ids_json(self) -> None:
         with self._connect() as connection:
@@ -269,7 +193,7 @@ class SQLiteSessionStore:
             return existing
 
         now = _now()
-        resolved_title = (title or "新的财报对话").strip() or "新的财报对话"
+        resolved_title = (title or "新对话").strip() or "新对话"
         resolved_doc_id = _primary_doc_id(resolved_doc_ids)
         with self._connect() as connection:
             connection.execute(
@@ -292,7 +216,7 @@ class SQLiteSessionStore:
         self,
         session_id: str,
         *,
-        title: str = "新的财报对话",
+        title: str = "新对话",
         doc_id: str | None = None,
         doc_ids: list[str] | None = None,
     ) -> SessionSummary:
@@ -370,7 +294,6 @@ class SQLiteSessionStore:
     def delete_session(self, session_id: str) -> bool:
         with self._connect() as connection:
             connection.execute("DELETE FROM session_turns WHERE session_id = ?", (session_id,))
-            connection.execute("DELETE FROM session_states WHERE session_id = ?", (session_id,))
             cursor = connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         return cursor.rowcount > 0
 
@@ -381,9 +304,7 @@ class SQLiteSessionStore:
         now = _now()
         changed = 0
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT id, doc_id, doc_ids_json FROM sessions"
-            ).fetchall()
+            rows = connection.execute("SELECT id, doc_id, doc_ids_json FROM sessions").fetchall()
             for row in rows:
                 current_doc_ids = _doc_ids_from_json(row["doc_ids_json"], fallback_doc_id=row["doc_id"])
                 next_doc_ids = [item for item in current_doc_ids if item != resolved_doc_id]
@@ -408,6 +329,8 @@ class SQLiteSessionStore:
         assistant_content: str,
         citations: list[dict[str, Any]],
         tool_results: list[dict[str, Any]],
+        reasoning_content: str = "",
+        usage: dict[str, Any] | None = None,
         doc_id: str | None = None,
         doc_ids: list[str] | None = None,
     ) -> SessionTurn:
@@ -418,18 +341,12 @@ class SQLiteSessionStore:
             title=user_content[:18] or "新的财报对话",
             doc_ids=resolved_doc_ids if selection_provided else None,
         )
-        title = session.title
-        if title == "新的财报对话" and user_content.strip():
-            if selection_provided:
-                self.update_session(session_id, title=user_content[:18], doc_ids=resolved_doc_ids)
-            else:
-                self.update_session(session_id, title=user_content[:18])
+        if session.title == "新对话" and user_content.strip():
+            self.update_session(session_id, title=user_content[:18])
         elif selection_provided:
             self.update_session(session_id, doc_ids=resolved_doc_ids)
 
         now = _now()
-        citations_json = json.dumps(citations, ensure_ascii=False)
-        tool_results_json = json.dumps(tool_results, ensure_ascii=False)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -437,33 +354,36 @@ class SQLiteSessionStore:
                     session_id,
                     user_content,
                     assistant_content,
+                    reasoning_content,
                     citations_json,
                     tool_results_json,
+                    usage_json,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
                     user_content,
                     assistant_content,
-                    citations_json,
-                    tool_results_json,
+                    reasoning_content,
+                    json.dumps(citations, ensure_ascii=False),
+                    json.dumps(tool_results, ensure_ascii=False),
+                    json.dumps(usage, ensure_ascii=False) if usage is not None else None,
                     now,
                 ),
             )
-            connection.execute(
-                "UPDATE sessions SET updated_at = ? WHERE id = ?",
-                (now, session_id),
-            )
+            connection.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
             turn_id = int(cursor.lastrowid)
         return SessionTurn(
             id=turn_id,
             session_id=session_id,
             user_content=user_content,
             assistant_content=assistant_content,
+            reasoning_content=reasoning_content,
             citations=citations,
             tool_results=tool_results,
+            usage=usage,
             created_at=now,
         )
 
@@ -472,7 +392,7 @@ class SQLiteSessionStore:
             rows = connection.execute(
                 """
                 SELECT id, session_id, user_content, assistant_content,
-                       citations_json, tool_results_json, created_at
+                       reasoning_content, citations_json, tool_results_json, usage_json, created_at
                 FROM session_turns
                 WHERE session_id = ?
                 ORDER BY id ASC
@@ -485,41 +405,14 @@ class SQLiteSessionStore:
                 session_id=row["session_id"],
                 user_content=row["user_content"],
                 assistant_content=row["assistant_content"],
-                citations=json.loads(row["citations_json"]),
-                tool_results=json.loads(row["tool_results_json"]),
+                reasoning_content=row["reasoning_content"] or "",
+                citations=_json_list(row["citations_json"]),
+                tool_results=_json_list(row["tool_results_json"]),
+                usage=_json_object(row["usage_json"]),
                 created_at=row["created_at"],
             )
             for row in rows
         ]
-
-    def load(self, session_id: str) -> ConversationState:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT state_json FROM session_states WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-        if row is None:
-            return ConversationState()
-        return _state_from_json(row["state_json"])
-
-    def save(self, session_id: str, state: ConversationState) -> None:
-        self.ensure_session(session_id)
-        now = _now()
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO session_states (session_id, state_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    state_json = excluded.state_json,
-                    updated_at = excluded.updated_at
-                """,
-                (session_id, _state_to_json(state), now),
-            )
-            connection.execute(
-                "UPDATE sessions SET updated_at = ? WHERE id = ?",
-                (now, session_id),
-            )
 
     @staticmethod
     def _row_to_summary(row: sqlite3.Row) -> SessionSummary:

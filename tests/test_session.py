@@ -2,68 +2,10 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.domain import ConversationState
-from app.messages import AssistantMessage, SystemMessage, ToolCall, ToolResultMessage, UserMessage
-from app.session import InMemorySessionStore, SQLiteSessionStore
+from app.session import SQLiteSessionStore
 
 
 class SessionStoreTests(unittest.TestCase):
-    def test_conversation_state_rejects_unstructured_dict_messages(self) -> None:
-        with self.assertRaises(TypeError):
-            ConversationState(messages=[{"role": "user", "content": "hi"}])
-
-    def test_load_returns_saved_state(self) -> None:
-        store = InMemorySessionStore()
-        state = ConversationState(messages=[SystemMessage(content="system")])
-
-        store.save("session-1", state)
-        loaded = store.load("session-1")
-
-        self.assertEqual(loaded.messages[0].content, "system")
-
-    def test_load_returns_empty_state_for_missing_session(self) -> None:
-        store = InMemorySessionStore()
-
-        loaded = store.load("missing")
-
-        self.assertEqual(loaded.messages, [])
-
-    def test_sqlite_store_persists_structured_conversation_state(self) -> None:
-        with TemporaryDirectory() as directory:
-            db_path = Path(directory) / "sessions.sqlite3"
-            store = SQLiteSessionStore(db_path)
-            state = ConversationState(
-                messages=[
-                    UserMessage(content="营业总收入是多少？"),
-                    AssistantMessage(
-                        content="",
-                        tool_calls=[
-                            ToolCall(
-                                tool_name="search_reports",
-                                arguments={"query": "营业总收入"},
-                                tool_call_id="call-1",
-                            )
-                        ],
-                    ),
-                    ToolResultMessage(
-                        tool_name="search_reports",
-                        tool_call_id="call-1",
-                        output={"results": [{"doc_name": "doc-a.pdf"}]},
-                    ),
-                    AssistantMessage(content="营业总收入为 100 亿元。"),
-                ]
-            )
-
-            store.save("session-1", state)
-            loaded = SQLiteSessionStore(db_path).load("session-1")
-
-            self.assertIsInstance(loaded.messages[0], UserMessage)
-            self.assertIsInstance(loaded.messages[1], AssistantMessage)
-            self.assertEqual(loaded.messages[1].tool_calls[0].tool_name, "search_reports")
-            self.assertIsInstance(loaded.messages[2], ToolResultMessage)
-            self.assertEqual(loaded.messages[2].output["results"][0]["doc_name"], "doc-a.pdf")
-            self.assertEqual(loaded.messages[3].content, "营业总收入为 100 亿元。")
-
     def test_sqlite_store_records_turns_and_session_summary(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "sessions.sqlite3"
@@ -73,15 +15,10 @@ class SessionStoreTests(unittest.TestCase):
                 "session-1",
                 user_content="营业总收入是多少？",
                 assistant_content="营业总收入为 100 亿元。",
+                reasoning_content="先检索财报证据。",
                 citations=[{"doc_id": "doc-a", "doc_name": "doc-a.pdf", "page": 12}],
-                tool_results=[
-                    {
-                        "tool_name": "search_reports",
-                        "arguments": {"query": "营业总收入"},
-                        "output": {"results": []},
-                        "tool_call_id": "call-1",
-                    }
-                ],
+                tool_results=[],
+                usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
                 doc_id="doc-a",
             )
 
@@ -89,13 +26,15 @@ class SessionStoreTests(unittest.TestCase):
             session = reloaded.get_session("session-1")
             turns = reloaded.list_turns("session-1")
 
-            self.assertIsNotNone(session)
-            self.assertEqual(session.doc_id, "doc-a")
-            self.assertEqual(session.doc_ids, ["doc-a"])
-            self.assertEqual(session.title, "营业总收入是多少？")
-            self.assertEqual(len(turns), 1)
-            self.assertEqual(turns[0].citations[0]["page"], 12)
-            self.assertEqual(turns[0].tool_results[0]["tool_call_id"], "call-1")
+        self.assertIsNotNone(session)
+        self.assertEqual(session.doc_id, "doc-a")
+        self.assertEqual(session.doc_ids, ["doc-a"])
+        self.assertEqual(session.title, "营业总收入是多少？")
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0].reasoning_content, "先检索财报证据。")
+        self.assertEqual(turns[0].citations[0]["page"], 12)
+        self.assertEqual(turns[0].tool_results, [])
+        self.assertEqual(turns[0].usage["total_tokens"], 120)
 
     def test_sqlite_store_persists_multiple_document_selection(self) -> None:
         with TemporaryDirectory() as directory:
@@ -118,6 +57,26 @@ class SessionStoreTests(unittest.TestCase):
         self.assertIsNotNone(reloaded)
         self.assertEqual(reloaded.doc_id, "doc-c")
         self.assertEqual(reloaded.doc_ids, ["doc-c"])
+
+    def test_delete_session_removes_turns(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "sessions.sqlite3"
+            store = SQLiteSessionStore(db_path)
+            store.record_turn(
+                "session-1",
+                user_content="问题",
+                assistant_content="回答",
+                citations=[],
+                tool_results=[],
+            )
+
+            deleted = store.delete_session("session-1")
+            missing = store.get_session("session-1")
+            turns = store.list_turns("session-1")
+
+        self.assertTrue(deleted)
+        self.assertIsNone(missing)
+        self.assertEqual(turns, [])
 
 
 if __name__ == "__main__":
