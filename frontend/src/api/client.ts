@@ -64,6 +64,25 @@ export type SessionDetailResponse = {
   messages: SessionMessageResponse[];
 };
 
+export type DocumentResponse = {
+  id: string;
+  name: string;
+  page_count: number;
+  parsed: boolean;
+};
+
+export type DocumentPageResponse = {
+  doc_id: string;
+  doc_name: string;
+  page: number;
+  text: string;
+  blocks: Array<{
+    type: string;
+    text: string;
+    bbox: Array<number> | null;
+  }>;
+};
+
 export type ChatStreamEvent =
   | { event: "session"; data: { session_id: string } }
   | { event: "status"; data: { message: string } }
@@ -119,6 +138,21 @@ export type SessionSummaryResponse = {
 
 export function listSessions() {
   return requestJson<SessionSummaryResponse[]>("/sessions");
+}
+
+export function listDocuments() {
+  return requestJson<DocumentResponse[]>("/documents");
+}
+
+export function getDocumentPage(docId: string, page: number) {
+  return requestJson<DocumentPageResponse>(
+    `/documents/${encodeURIComponent(docId)}/pages/${page}`,
+  );
+}
+
+export function documentPdfUrl(docId: string, page?: number | null) {
+  const base = `${API_PREFIX}/documents/${encodeURIComponent(docId)}/pdf`;
+  return page ? `${base}#page=${page}` : base;
 }
 
 export function getSession(sessionId: string) {

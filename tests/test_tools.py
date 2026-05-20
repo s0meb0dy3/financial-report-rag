@@ -1,6 +1,16 @@
 import unittest
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from app.documents import DocumentService
+from app.tools import ListReportsTool, ReadPdfPageTool
 from app.tools import ToolRegistry, extract_text_tool_calls
+
+
+def write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 class FakeTool:
@@ -54,6 +64,37 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(calls[0].arguments["query"], "Google 最新新闻")
         self.assertEqual(calls[0].arguments["topic"], "news")
         self.assertEqual(calls[0].arguments["max_results"], 10)
+
+    def test_report_tools_list_and_read_page_with_citation(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "raw" / "report.pdf"
+            pdf.parent.mkdir(parents=True)
+            pdf.write_bytes(b"%PDF-1.4")
+            artifact = root / "mineru" / "doc-a"
+            write_json(
+                artifact / "manifest.json",
+                {"doc_id": "doc-a", "file_name": "report.pdf", "source_path": str(pdf)},
+            )
+            write_json(
+                artifact / "content_list_v2.json",
+                [
+                    [
+                        {
+                            "type": "paragraph",
+                            "content": {"paragraph_content": [{"type": "text", "content": "营收 100 亿元"}]},
+                        }
+                    ]
+                ],
+            )
+            service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
+
+            reports = ListReportsTool(service).run({})
+            page = ReadPdfPageTool(service).run({"doc_id": "doc-a", "page": 1})
+
+        self.assertEqual(reports["reports"][0]["doc_id"], "doc-a")
+        self.assertEqual(page["text"], "营收 100 亿元")
+        self.assertEqual(page["citations"][0]["page"], 1)
 
 
 if __name__ == "__main__":

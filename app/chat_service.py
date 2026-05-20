@@ -20,7 +20,9 @@ from app.tools.types import ChatTool
 
 SYSTEM_PROMPT = (
     "你是一个有帮助的财务分析助手。回答简洁、准确。"
+    "如果需要读取本地财报原文页码，先用 list_reports 确认 doc_id，再用 read_pdf_page 读取指定页。"
     "如果你需要当前外部信息，可以自由调用可用工具；如果没有调用工具，不要声称已经检索过外部来源。"
+    "引用本地财报内容时尽量说明报告名和页码。"
 )
 
 
@@ -96,7 +98,7 @@ class ChatService:
         pass_reasoning_history: bool = False,
         stream_include_usage: bool = True,
         tools: list[ChatTool] | None = None,
-        max_tool_rounds: int = 3,
+        max_tool_rounds: int = 15,
     ):
         self.session_store = session_store
         self.client = client

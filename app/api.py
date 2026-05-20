@@ -1,12 +1,14 @@
 import json
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.chat_service import ChatService
+from app.documents import DocumentService, DocumentServiceError
 from app.factory import build_chat_service_from_env
 from app.session import SQLiteSessionStore, SessionSummary, SessionTurn
 
@@ -69,6 +71,27 @@ class SessionDetailResponse(BaseModel):
     messages: list[SessionMessageResponse] = Field(default_factory=list)
 
 
+class DocumentResponse(BaseModel):
+    id: str
+    name: str
+    page_count: int
+    parsed: bool = True
+
+
+class DocumentPageBlockResponse(BaseModel):
+    type: str
+    text: str = ""
+    bbox: list[float | int] | None = None
+
+
+class DocumentPageResponse(BaseModel):
+    doc_id: str
+    doc_name: str
+    page: int
+    text: str
+    blocks: list[DocumentPageBlockResponse] = Field(default_factory=list)
+
+
 def get_chat_service(request: Request) -> ChatService:
     service = getattr(request.app.state, "chat_service", None)
     if not isinstance(service, ChatService):
@@ -81,6 +104,13 @@ def get_session_store(request: Request) -> SQLiteSessionStore:
     if not isinstance(store, SQLiteSessionStore):
         raise HTTPException(status_code=503, detail="Session store is not initialized")
     return store
+
+
+def get_document_service(request: Request) -> DocumentService:
+    service = getattr(request.app.state, "document_service", None)
+    if not isinstance(service, DocumentService):
+        raise HTTPException(status_code=503, detail="Document service is not initialized")
+    return service
 
 
 def _session_summary_response(session: SessionSummary) -> SessionSummaryResponse:
@@ -145,15 +175,19 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 def create_app(
     chat_service: ChatService | None = None,
     session_store: SQLiteSessionStore | None = None,
+    document_service: DocumentService | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         owns_chat_service = chat_service is None
         resolved_session_store = session_store or SQLiteSessionStore.from_env()
+        resolved_document_service = document_service or DocumentService()
         resolved_chat_service = chat_service or build_chat_service_from_env(
-            session_store=resolved_session_store
+            session_store=resolved_session_store,
+            document_service=resolved_document_service,
         )
         app.state.session_store = resolved_session_store
+        app.state.document_service = resolved_document_service
         app.state.chat_service = resolved_chat_service
         try:
             yield
@@ -176,6 +210,40 @@ def create_app(
         store: SQLiteSessionStore = Depends(get_session_store),
     ) -> list[SessionSummaryResponse]:
         return [_session_summary_response(s) for s in store.list_sessions()]
+
+    @app.get("/documents", response_model=list[DocumentResponse])
+    def list_documents(
+        service: DocumentService = Depends(get_document_service),
+    ) -> list[DocumentResponse]:
+        return [DocumentResponse(**doc.to_dict()) for doc in service.list_documents()]
+
+    @app.get("/documents/{doc_id}/pdf")
+    def get_document_pdf(
+        doc_id: str,
+        service: DocumentService = Depends(get_document_service),
+    ) -> FileResponse:
+        try:
+            doc = service.get_document(doc_id)
+            pdf_path = service.get_pdf_path(doc_id)
+        except DocumentServiceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(doc.name)}"},
+        )
+
+    @app.get("/documents/{doc_id}/pages/{page}", response_model=DocumentPageResponse)
+    def get_document_page(
+        doc_id: str,
+        page: int,
+        service: DocumentService = Depends(get_document_service),
+    ) -> DocumentPageResponse:
+        try:
+            parsed_page = service.read_page(doc_id, page)
+        except DocumentServiceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return DocumentPageResponse(**parsed_page.to_dict())
 
     @app.get("/sessions/{session_id}", response_model=SessionDetailResponse)
     def get_session(

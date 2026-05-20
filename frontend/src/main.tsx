@@ -1,18 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import ReactMarkdown from "react-markdown";
+import * as pdfjsLib from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import remarkGfm from "remark-gfm";
 import {
+  documentPdfUrl,
+  getDocumentPage,
   getSession,
+  listDocuments,
   listSessions,
   streamChat,
   type CitationResponse,
+  type DocumentPageResponse,
+  type DocumentResponse,
   type SessionMessageResponse,
   type SessionSummaryResponse,
   type ToolResultResponse,
   type UsageResponse,
 } from "./api/client";
 import "./styles.css";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 type Message = {
   id: string;
@@ -56,7 +65,9 @@ function Icon({
     | "bolt"
     | "chevron"
     | "copy"
+    | "file"
     | "menu"
+    | "panel"
     | "plus"
   className?: string;
 }) {
@@ -64,7 +75,9 @@ function Icon({
     bolt: "M13 2 4 14h7l-1 8 10-13h-7l1-7Z",
     chevron: "m6 9 6 6 6-6",
     copy: "M8 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Zm-2 8H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1",
+    file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Zm0 0v6h6M8 13h8M8 17h5",
     menu: "M7 4h10M7 12h10M7 20h10",
+    panel: "M4 5h16v14H4zM14 5v14",
     plus: "M12 5v14M5 12h14",
   };
   return (
@@ -74,15 +87,27 @@ function Icon({
   );
 }
 
-function CitationList({ citations }: { citations: CitationResponse[] }) {
+function CitationList({
+  citations,
+  onOpenCitation,
+}: {
+  citations: CitationResponse[];
+  onOpenCitation?: (citation: CitationResponse) => void;
+}) {
   if (!citations.length) return null;
   return (
     <div className="citations" aria-label="引用来源">
       {citations.map((citation, index) => (
-        <span className="citation" key={`${citation.doc_id}-${citation.page}-${index}`}>
+        <button
+          className="citation"
+          disabled={!citation.page || !onOpenCitation}
+          key={`${citation.doc_id}-${citation.page}-${index}`}
+          type="button"
+          onClick={() => onOpenCitation?.(citation)}
+        >
           {citation.doc_name || citation.doc_id}
           {citation.page ? ` p.${citation.page}` : ""}
-        </span>
+        </button>
       ))}
     </div>
   );
@@ -213,7 +238,15 @@ function ReasoningBlock({ message, now }: { message: Message; now: number }) {
   );
 }
 
-function AssistantMessage({ message, now }: { message: Message; now: number }) {
+function AssistantMessage({
+  message,
+  now,
+  onOpenCitation,
+}: {
+  message: Message;
+  now: number;
+  onOpenCitation: (citation: CitationResponse) => void;
+}) {
   return (
     <article className="assistant-message">
       <div className="assistant-inner">
@@ -227,13 +260,376 @@ function AssistantMessage({ message, now }: { message: Message; now: number }) {
               <span className="typing">正在生成...</span>
             )}
           </div>
-          <CitationList citations={message.citations} />
+          <CitationList citations={message.citations} onOpenCitation={onOpenCitation} />
         </section>
         <div className="answer-actions" aria-label="消息操作">
           <CopyButton text={message.content} label="复制回答" />
         </div>
       </div>
     </article>
+  );
+}
+
+const PAGE_GAP = 12;
+const BUFFER_PAGES = 2;
+
+function PdfScrollViewer({
+  docId,
+  scrollToPage,
+  onVisiblePageChange,
+}: {
+  docId: string;
+  scrollToPage: number;
+  onVisiblePageChange: (page: number) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [totalPages, setTotalPages] = useState(0);
+  const [pageHeights, setPageHeights] = useState<number[]>([]);
+  const [renderRange, setRenderRange] = useState({ start: 0, end: 0 });
+  const scaleRef = useRef(1);
+  const scrollAnchorRef = useRef<{ page: number; offset: number } | null>(null);
+
+  // Load PDF and measure all pages
+  useEffect(() => {
+    let cancelled = false;
+    const loadingTask = pdfjsLib.getDocument(documentPdfUrl(docId));
+
+    loadingTask.promise.then(async (pdf) => {
+      if (cancelled) return;
+      const numPages = pdf.numPages;
+      const container = containerRef.current;
+      if (!container) return;
+
+      const availableWidth = Math.max(280, container.clientWidth - 24);
+      const heights: number[] = [];
+
+      for (let i = 1; i <= numPages; i++) {
+        const page = await pdf.getPage(i);
+        if (cancelled) return;
+        const viewport = page.getViewport({ scale: 1 });
+        const scale = Math.min(1.7, Math.max(0.55, availableWidth / viewport.width));
+        scaleRef.current = scale;
+        const scaledViewport = page.getViewport({ scale });
+        heights.push(scaledViewport.height);
+      }
+
+      if (!cancelled) {
+        setTotalPages(numPages);
+        setPageHeights(heights);
+      }
+    }).catch(() => {});
+
+    return () => {
+      cancelled = true;
+      void loadingTask.destroy();
+    };
+  }, [docId]);
+
+  // Compute total height
+  const totalHeight = useMemo(() => {
+    if (!pageHeights.length) return 0;
+    return pageHeights.reduce((sum, h) => sum + h, 0) + (pageHeights.length - 1) * PAGE_GAP;
+  }, [pageHeights]);
+
+  // Get Y offset for a given page (1-based)
+  const getPageOffset = useCallback(
+    (page: number) => {
+      if (!pageHeights.length) return 0;
+      let offset = 0;
+      for (let i = 0; i < page - 1 && i < pageHeights.length; i++) {
+        offset += pageHeights[i] + PAGE_GAP;
+      }
+      return offset;
+    },
+    [pageHeights],
+  );
+
+  // Track visible page on scroll
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !pageHeights.length) return;
+
+    const handleScroll = () => {
+      const scrollTop = container.scrollTop;
+      const viewCenter = scrollTop + container.clientHeight / 2;
+      let offset = 0;
+      for (let i = 0; i < pageHeights.length; i++) {
+        const pageBottom = offset + pageHeights[i];
+        if (viewCenter >= offset && viewCenter <= pageBottom) {
+          onVisiblePageChange(i + 1);
+          break;
+        }
+        offset = pageHeights[i] + PAGE_GAP + offset;
+      }
+    };
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, [pageHeights, onVisiblePageChange]);
+
+  // Compute which pages to render based on scroll position
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !pageHeights.length) return;
+
+    const updateRange = () => {
+      const scrollTop = container.scrollTop;
+      const scrollBottom = scrollTop + container.clientHeight;
+
+      let offset = 0;
+      let start = 0;
+      let end = 0;
+      let foundStart = false;
+
+      for (let i = 0; i < pageHeights.length; i++) {
+        const pageTop = offset;
+        const pageBottom = offset + pageHeights[i];
+
+        if (!foundStart && pageBottom >= scrollTop) {
+          start = Math.max(0, i - BUFFER_PAGES);
+          foundStart = true;
+        }
+        if (foundStart && pageTop > scrollBottom) {
+          end = Math.min(pageHeights.length, i + BUFFER_PAGES);
+          break;
+        }
+        offset = pageBottom + PAGE_GAP;
+      }
+      if (end === 0) end = pageHeights.length;
+      setRenderRange({ start, end });
+    };
+
+    updateRange();
+    container.addEventListener("scroll", updateRange, { passive: true });
+    return () => container.removeEventListener("scroll", updateRange);
+  }, [pageHeights]);
+
+  // Scroll to specific page when scrollToPage changes
+  useEffect(() => {
+    if (!scrollToPage || !pageHeights.length || !containerRef.current) return;
+    const container = containerRef.current;
+    const targetPage = Math.min(Math.max(1, scrollToPage), pageHeights.length);
+    const offset = getPageOffset(targetPage);
+    container.scrollTo({ top: offset, behavior: "smooth" });
+  }, [scrollToPage, pageHeights, getPageOffset]);
+
+  return (
+    <div className="pdf-scroll-container" ref={containerRef}>
+      <div className="pdf-scroll-spacer" style={{ height: totalHeight, position: "relative" }}>
+        {pageHeights.length > 0 &&
+          Array.from({ length: renderRange.end - renderRange.start }, (_, i) => {
+            const pageIndex = renderRange.start + i;
+            const pageNum = pageIndex + 1;
+            let top = 0;
+            for (let j = 0; j < pageIndex; j++) {
+              top += pageHeights[j] + PAGE_GAP;
+            }
+            return (
+              <div
+                key={pageNum}
+                className="pdf-page-slot"
+                style={{ position: "absolute", top, left: 0, right: 0 }}
+              >
+                <PdfPageCanvas docId={docId} page={pageNum} scale={scaleRef.current} />
+                <span className="pdf-page-number">{pageNum}</span>
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
+
+function PdfPageCanvas({ docId, page, scale }: { docId: string; page: number; scale: number }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let loadingTask: pdfjsLib.PDFDocumentLoadingTask | null = null;
+    let renderTask: { cancel: () => void; promise: Promise<unknown> } | null = null;
+
+    async function renderPage() {
+      const canvas = canvasRef.current;
+      if (!canvas || !docId) return;
+
+      setError("");
+      loadingTask = pdfjsLib.getDocument(documentPdfUrl(docId));
+      const pdf = await loadingTask.promise;
+      if (cancelled) return;
+      const boundedPage = Math.min(Math.max(1, page), pdf.numPages);
+      const pdfPage = await pdf.getPage(boundedPage);
+      if (cancelled) return;
+
+      const viewport = pdfPage.getViewport({ scale });
+      const pixelRatio = window.devicePixelRatio || 1;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+
+      canvas.width = Math.floor(viewport.width * pixelRatio);
+      canvas.height = Math.floor(viewport.height * pixelRatio);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.clearRect(0, 0, viewport.width, viewport.height);
+
+      renderTask = pdfPage.render({ canvasContext: context, viewport });
+      await renderTask.promise;
+    }
+
+    renderPage().catch((err: unknown) => {
+      if (cancelled) return;
+      setError(err instanceof Error ? err.message : "PDF 渲染失败");
+    });
+
+    return () => {
+      cancelled = true;
+      renderTask?.cancel();
+      void loadingTask?.destroy();
+    };
+  }, [docId, page, scale]);
+
+  return (
+    <div className="pdf-canvas-wrap">
+      <canvas ref={canvasRef} />
+      {error ? <p className="pdf-error">{error}</p> : null}
+    </div>
+  );
+}
+
+function DocumentPanel({
+  documents,
+  activeDocId,
+  scrollToPage,
+  pageDetail,
+  collapsed,
+  onToggle,
+  onOpenPage,
+  onVisiblePageChange,
+  onResize,
+  onResizeStart,
+  onResizeEnd,
+}: {
+  documents: DocumentResponse[];
+  activeDocId: string;
+  scrollToPage: number;
+  pageDetail: DocumentPageResponse | null;
+  collapsed: boolean;
+  onToggle: () => void;
+  onOpenPage: (docId: string, page: number) => void;
+  onVisiblePageChange: (page: number) => void;
+  onResize: (width: number) => void;
+  onResizeStart: () => void;
+  onResizeEnd: () => void;
+}) {
+  const handleRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handle = handleRef.current;
+    if (!handle || collapsed) return;
+
+    let startX = 0;
+    let startWidth = 0;
+
+    const onMouseMove = (e: MouseEvent) => {
+      const delta = startX - e.clientX;
+      const next = Math.min(900, Math.max(280, startWidth + delta));
+      onResize(next);
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      onResizeEnd();
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startWidth = handle.parentElement?.clientWidth ?? 420;
+      onResizeStart();
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    };
+
+    handle.addEventListener("mousedown", onMouseDown);
+    return () => {
+      handle.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [collapsed, onResize, onResizeStart, onResizeEnd]);
+  const activeDoc = documents.find((doc) => doc.id === activeDocId) ?? documents[0] ?? null;
+
+  if (collapsed) {
+    return (
+      <aside className="document-panel collapsed" aria-label="PDF 预览">
+        <button type="button" className="document-panel-toggle" onClick={onToggle} aria-label="展开 PDF 预览">
+          <Icon name="panel" />
+        </button>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="document-panel" aria-label="PDF 预览">
+      <div className="resize-handle" ref={handleRef} />
+      <div className="document-panel-header">
+        <div>
+          <span>Source</span>
+          <h2>PDF 预览</h2>
+        </div>
+        <button type="button" onClick={onToggle} aria-label="收起 PDF 预览">
+          <Icon name="panel" />
+        </button>
+      </div>
+
+      <div className="document-controls">
+        <label>
+          <span>报告</span>
+          <select
+            value={activeDoc?.id ?? ""}
+            onChange={(event) => onOpenPage(event.target.value, 1)}
+          >
+            {documents.length === 0 ? <option value="">暂无报告</option> : null}
+            {documents.map((doc) => (
+              <option value={doc.id} key={doc.id}>
+                {doc.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="pdf-frame-wrap">
+        {activeDoc ? (
+          <PdfScrollViewer
+            docId={activeDoc.id}
+            scrollToPage={scrollToPage}
+            onVisiblePageChange={onVisiblePageChange}
+            key={activeDoc.id}
+          />
+        ) : (
+          <div className="pdf-empty">
+            <Icon name="file" />
+            <p>没有找到可预览的 PDF</p>
+          </div>
+        )}
+      </div>
+
+      <div className="page-excerpt">
+        <div className="page-excerpt-title">
+          <strong>{activeDoc?.name ?? "未选择报告"}</strong>
+          {activeDoc ? <span>p.{pageDetail?.page ?? "-"} / {activeDoc.page_count}</span> : null}
+        </div>
+        <p>{pageDetail?.text || "滚动 PDF 查看内容，或点击引用跳转到指定页面。"}</p>
+      </div>
+    </aside>
   );
 }
 
@@ -343,12 +739,20 @@ function Sidebar({
 function App() {
   const [sessionId, setSessionId] = useState(createSessionId);
   const [sessions, setSessions] = useState<SessionSummaryResponse[]>([]);
+  const [documents, setDocuments] = useState<DocumentResponse[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [status, setStatus] = useState("准备开始");
   const [isSending, setIsSending] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [documentPanelCollapsed, setDocumentPanelCollapsed] = useState(true);
+  const [documentPanelWidth, setDocumentPanelWidth] = useState(420);
+  const [isResizing, setIsResizing] = useState(false);
+  const [activeDocumentId, setActiveDocumentId] = useState("");
+  const [scrollToPage, setScrollToPage] = useState(0);
+  const [visiblePage, setVisiblePage] = useState(1);
+  const [pageDetail, setPageDetail] = useState<DocumentPageResponse | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const canSend = useMemo(() => input.trim().length > 0 && !isSending, [input, isSending]);
@@ -370,6 +774,20 @@ function App() {
   useEffect(() => {
     refreshSessions();
   }, [refreshSessions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listDocuments()
+      .then((items) => {
+        if (cancelled) return;
+        setDocuments(items);
+        setActiveDocumentId((current) => current || items[0]?.id || "");
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isSending) return;
@@ -421,6 +839,33 @@ function App() {
     setInput("");
     setStatus("准备开始");
   }, []);
+
+  const openDocumentPage = useCallback((docId: string, page: number) => {
+    if (!docId || page < 1) return;
+    setActiveDocumentId(docId);
+    setScrollToPage(page);
+    setDocumentPanelCollapsed(false);
+  }, []);
+
+  const openCitation = useCallback(
+    (citation: CitationResponse) => {
+      if (!citation.page) return;
+      openDocumentPage(citation.doc_id, citation.page);
+    },
+    [openDocumentPage],
+  );
+
+  const handleVisiblePageChange = useCallback(
+    (page: number) => {
+      setVisiblePage(page);
+      if (activeDocumentId) {
+        getDocumentPage(activeDocumentId, page)
+          .then(setPageDetail)
+          .catch(() => setPageDetail(null));
+      }
+    },
+    [activeDocumentId],
+  );
 
   const submit = useCallback(
     async (event?: React.FormEvent) => {
@@ -532,7 +977,15 @@ function App() {
   );
 
   return (
-    <main className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+    <main
+      className={[
+        "app-shell",
+        sidebarCollapsed ? "sidebar-collapsed" : "",
+        documentPanelCollapsed ? "document-collapsed" : "",
+        isResizing ? "resizing" : "",
+      ].filter(Boolean).join(" ")}
+      style={{ "--doc-panel-width": `${documentPanelWidth}px` } as React.CSSProperties}
+    >
       <Sidebar
         sessions={sessions}
         activeSessionId={sessionId}
@@ -558,7 +1011,12 @@ function App() {
           ) : (
             messages.map((message) =>
               message.role === "assistant" ? (
-                <AssistantMessage message={message} now={now} key={message.id} />
+                <AssistantMessage
+                  message={message}
+                  now={now}
+                  onOpenCitation={openCitation}
+                  key={message.id}
+                />
               ) : (
                 <UserMessage content={message.content} key={message.id} />
               ),
@@ -588,6 +1046,19 @@ function App() {
           </form>
         </div>
       </section>
+      <DocumentPanel
+        documents={documents}
+        activeDocId={activeDocumentId}
+        scrollToPage={scrollToPage}
+        pageDetail={pageDetail}
+        collapsed={documentPanelCollapsed}
+        onToggle={() => setDocumentPanelCollapsed((v) => !v)}
+        onOpenPage={openDocumentPage}
+        onVisiblePageChange={handleVisiblePageChange}
+        onResize={setDocumentPanelWidth}
+        onResizeStart={() => setIsResizing(true)}
+        onResizeEnd={() => setIsResizing(false)}
+      />
     </main>
   );
 }

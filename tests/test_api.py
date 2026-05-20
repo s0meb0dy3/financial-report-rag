@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.api import create_app
 from app.chat_service import ChatService
+from app.documents import DocumentService
 from app.session import SQLiteSessionStore
 
 
@@ -33,6 +35,34 @@ def build_test_service(store: SQLiteSessionStore) -> ChatService:
         client=client,
         model="test-model",
     )
+
+
+def write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def build_document_service(root: Path) -> DocumentService:
+    pdf = root / "raw" / "report.pdf"
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF-1.4")
+    artifact = root / "mineru" / "doc-a"
+    write_json(
+        artifact / "manifest.json",
+        {"doc_id": "doc-a", "file_name": "report.pdf", "source_path": str(pdf)},
+    )
+    write_json(
+        artifact / "content_list_v2.json",
+        [
+            [
+                {
+                    "type": "paragraph",
+                    "content": {"paragraph_content": [{"type": "text", "content": "第一页内容"}]},
+                }
+            ]
+        ],
+    )
+    return DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
 
 
 class ApiTests(unittest.TestCase):
@@ -106,6 +136,29 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["messages"][1]["reasoning_content"], "思考")
         self.assertEqual(payload["messages"][1]["tool_results"], [])
         self.assertEqual(payload["messages"][1]["usage"]["total_tokens"], 12)
+
+    def test_document_endpoints_list_read_and_serve_pdf(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            doc_service = build_document_service(root)
+            with TestClient(
+                create_app(
+                    chat_service=build_test_service(store),
+                    session_store=store,
+                    document_service=doc_service,
+                )
+            ) as client:
+                docs = client.get("/documents")
+                page = client.get("/documents/doc-a/pages/1")
+                pdf = client.get("/documents/doc-a/pdf")
+
+        self.assertEqual(docs.status_code, 200)
+        self.assertEqual(docs.json()[0]["id"], "doc-a")
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.json()["text"], "第一页内容")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertIn("application/pdf", pdf.headers["content-type"])
 
 
 if __name__ == "__main__":
