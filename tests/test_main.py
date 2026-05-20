@@ -1,43 +1,38 @@
 import unittest
-from unittest.mock import patch
+from contextlib import redirect_stdout
+from io import StringIO
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from main import build_arg_parser, main
 
 
 class MainCliTests(unittest.TestCase):
-    def test_build_arg_parser_exposes_ingest_and_index(self) -> None:
+    def test_build_arg_parser_exposes_minimal_commands(self) -> None:
         parser = build_arg_parser()
 
         commands = parser._subparsers._actions[1].choices.keys()
 
-        self.assertEqual(set(commands), {"ingest", "index"})
+        self.assertEqual(set(commands), {"serve", "chat"})
 
-    def test_main_dispatches_ingest_command(self) -> None:
-        with patch("main.run_ingest_command", return_value=0) as mock_run:
-            exit_code = main(
-                [
-                    "ingest",
-                    "--input-dir",
-                    "data/raw",
-                    "--artifact-dir",
-                    "data/processed/mineru",
-                    "--force-parse",
-                ]
-            )
+    def test_main_dispatches_chat_command(self) -> None:
+        service = MagicMock()
+        service.ask.return_value = SimpleNamespace(answer="测试回答。")
+        with patch("main.build_chat_service_from_env", return_value=service):
+            with redirect_stdout(StringIO()) as output:
+                exit_code = main(["chat", "你好", "--session-id", "session-1"])
 
         self.assertEqual(exit_code, 0)
-        mock_run.assert_called_once()
-        self.assertEqual(mock_run.call_args.args[0].input_dir, "data/raw")
-        self.assertEqual(mock_run.call_args.args[0].artifact_dir, "data/processed/mineru")
-        self.assertTrue(mock_run.call_args.args[0].force_parse)
+        self.assertEqual(output.getvalue().strip(), "测试回答。")
+        service.ask.assert_called_once_with("你好", session_id="session-1")
+        service.close.assert_called_once()
 
-    def test_main_dispatches_index_command(self) -> None:
-        with patch("main.run_index_command", return_value=0) as mock_run:
-            exit_code = main(["index", "--chunks-path", "data/processed/chunks.json"])
+    def test_main_dispatches_serve_command(self) -> None:
+        with patch("main.uvicorn.run") as run:
+            exit_code = main(["serve", "--host", "0.0.0.0", "--port", "9000", "--reload"])
 
         self.assertEqual(exit_code, 0)
-        mock_run.assert_called_once()
-        self.assertEqual(mock_run.call_args.args[0].chunks_path, "data/processed/chunks.json")
+        run.assert_called_once_with("app.api:app", host="0.0.0.0", port=9000, reload=True)
 
 
 if __name__ == "__main__":

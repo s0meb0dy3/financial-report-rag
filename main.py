@@ -1,46 +1,40 @@
 import argparse
-from typing import Callable
 
-from app.ingestion import build_arg_parser as build_ingest_arg_parser
-from app.ingestion import run_command as run_ingest_command
-from app.retrieval import build_arg_parser as build_index_arg_parser
-from app.retrieval import run_command as run_index_command
+import uvicorn
 
-
-def _add_command(
-    subparsers: argparse._SubParsersAction,
-    *,
-    name: str,
-    build_parser: Callable[..., argparse.ArgumentParser],
-    handler,
-) -> None:
-    parent = build_parser(add_help=False)
-    parser = subparsers.add_parser(
-        name,
-        parents=[parent],
-        help=parent.description,
-        description=parent.description,
-    )
-    parser.set_defaults(handler=handler)
+from app.factory import build_chat_service_from_env
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Unified CLI for the financial report agent.")
+    parser = argparse.ArgumentParser(description="Minimal chatbox backend CLI.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    _add_command(
-        subparsers,
-        name="ingest",
-        build_parser=build_ingest_arg_parser,
-        handler=run_ingest_command,
-    )
-    _add_command(
-        subparsers,
-        name="index",
-        build_parser=build_index_arg_parser,
-        handler=run_index_command,
-    )
+    serve = subparsers.add_parser("serve", help="Start the FastAPI backend.")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--reload", action="store_true")
+    serve.set_defaults(handler=_serve)
+
+    chat = subparsers.add_parser("chat", help="Send one question through the same ChatService used by the API.")
+    chat.add_argument("question")
+    chat.add_argument("--session-id", default="cli")
+    chat.set_defaults(handler=_chat)
     return parser
+
+
+def _serve(args: argparse.Namespace) -> int:
+    uvicorn.run("app.api:app", host=args.host, port=args.port, reload=args.reload)
+    return 0
+
+
+def _chat(args: argparse.Namespace) -> int:
+    service = build_chat_service_from_env()
+    try:
+        result = service.ask(args.question, session_id=args.session_id)
+    finally:
+        service.close()
+    print(result.answer)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

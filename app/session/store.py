@@ -58,9 +58,8 @@ class SessionTurn:
 class SQLiteSessionStore:
     """SQLite chat history store.
 
-    The store is intentionally scoped to sessions and turns. Document indexing and
-    RAG filtering live in the RAG/retrieval modules instead of being mixed into
-    chat history persistence.
+    The store only owns chat sessions and turns. Model calls, tool execution, and
+    UI state stay outside the persistence layer so the app remains easy to trim.
     """
 
     @classmethod
