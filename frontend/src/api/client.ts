@@ -28,8 +28,19 @@ export type ChatResponse = {
   session_id: string;
   answer: string;
   citations: CitationResponse[];
+  tool_results: ToolResultResponse[];
   reasoning_content: string;
   usage: UsageResponse | null;
+};
+
+export type ToolResultResponse = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  status: "running" | "done" | "error";
+  content?: Record<string, unknown>;
+  citations?: CitationResponse[];
+  error?: string;
 };
 
 export type SessionMessageResponse = {
@@ -37,20 +48,10 @@ export type SessionMessageResponse = {
   role: "user" | "assistant";
   content: string;
   citations: CitationResponse[];
-  reasoning_content: string;
   tool_results: ToolResultResponse[];
+  reasoning_content: string;
   usage: UsageResponse | null;
   created_at: string;
-};
-
-export type ToolResultResponse = {
-  id?: string;
-  name?: string;
-  status?: "running" | "done" | "error";
-  message?: string;
-  evidence_count?: number;
-  table_count?: number;
-  citation_count?: number;
 };
 
 export type SessionDetailResponse = {
@@ -66,18 +67,8 @@ export type SessionDetailResponse = {
 export type ChatStreamEvent =
   | { event: "session"; data: { session_id: string } }
   | { event: "status"; data: { message: string } }
-  | {
-      event: "tool";
-      data: {
-        id: string;
-        name: string;
-        status: "running" | "done" | "error";
-        message: string;
-        evidence_count?: number;
-        table_count?: number;
-        citation_count?: number;
-      };
-    }
+  | { event: "tool_call"; data: ToolResultResponse }
+  | { event: "tool_result"; data: ToolResultResponse }
   | { event: "reasoning_delta"; data: { content: string } }
   | { event: "answer_delta"; data: { content: string } }
   | { event: "usage"; data: UsageResponse }
@@ -205,7 +196,8 @@ function parseSseBlock(block: string): ChatStreamEvent | null {
   if (
     eventName === "session" ||
     eventName === "status" ||
-    eventName === "tool" ||
+    eventName === "tool_call" ||
+    eventName === "tool_result" ||
     eventName === "reasoning_delta" ||
     eventName === "answer_delta" ||
     eventName === "usage" ||

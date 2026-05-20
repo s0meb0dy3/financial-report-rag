@@ -6,8 +6,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.agent import build_chat_service_from_env
 from app.chat_service import ChatService
+from app.factory import build_chat_service_from_env
 from app.session import SQLiteSessionStore, SessionSummary, SessionTurn
 
 
@@ -31,18 +31,19 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
 
 
-class ChatResponse(BaseModel):
-    session_id: str
-    answer: str
-    citations: list[Any] = Field(default_factory=list)
-    reasoning_content: str = ""
-    usage: UsageResponse | None = None
-
-
 class CitationResponse(BaseModel):
     doc_id: str
     doc_name: str
     page: int | None = None
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    answer: str
+    citations: list[CitationResponse] = Field(default_factory=list)
+    tool_results: list[dict[str, Any]] = Field(default_factory=list)
+    reasoning_content: str = ""
+    usage: UsageResponse | None = None
 
 
 class SessionSummaryResponse(BaseModel):
@@ -57,8 +58,8 @@ class SessionMessageResponse(BaseModel):
     role: str
     content: str
     citations: list[CitationResponse] = Field(default_factory=list)
-    reasoning_content: str = ""
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
+    reasoning_content: str = ""
     usage: UsageResponse | None = None
     created_at: str
 
@@ -116,8 +117,8 @@ def _messages_from_turns(turns: list[SessionTurn]) -> list[SessionMessageRespons
                 role="assistant",
                 content=turn.assistant_content,
                 citations=[_citation_response(item) for item in turn.citations],
-                reasoning_content=turn.reasoning_content,
                 tool_results=turn.tool_results,
+                reasoning_content=turn.reasoning_content,
                 usage=UsageResponse(**turn.usage) if isinstance(turn.usage, dict) else None,
                 created_at=turn.created_at,
             )
@@ -130,6 +131,8 @@ def _chat_response(payload: dict[str, Any]) -> ChatResponse:
     return ChatResponse(
         session_id=str(payload.get("session_id", "default")),
         answer=str(payload.get("answer", "")),
+        citations=[_citation_response(item) for item in payload.get("citations", [])],
+        tool_results=[item for item in payload.get("tool_results", []) if isinstance(item, dict)],
         reasoning_content=str(payload.get("reasoning_content", "")),
         usage=UsageResponse(**usage) if isinstance(usage, dict) else None,
     )

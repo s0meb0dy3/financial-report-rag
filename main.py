@@ -1,8 +1,6 @@
 import argparse
 from typing import Callable
 
-from app.eval import build_arg_parser as build_eval_arg_parser
-from app.eval import run_eval_command
 from app.ingestion import build_arg_parser as build_ingest_arg_parser
 from app.ingestion import run_command as run_ingest_command
 from app.retrieval import build_arg_parser as build_index_arg_parser
@@ -41,12 +39,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         name="index",
         build_parser=build_index_arg_parser,
         handler=run_index_command,
-    )
-    _add_command(
-        subparsers,
-        name="eval",
-        build_parser=build_eval_arg_parser,
-        handler=run_eval_command,
     )
     return parser
 

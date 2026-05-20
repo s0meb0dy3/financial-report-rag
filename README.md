@@ -1,14 +1,14 @@
 # Fintell
 
-极简财报 RAG Chat：先用 CLI 准备本地财报索引，再启动 FastAPI + React 单页聊天框。后端固定执行 `retrieve -> answer -> persist`，不再保留多工具 agent loop、图表生成、上传工作台或前端文档管理。
+极简前后端分离 Chatbox。后端负责 OpenAI-compatible 聊天、流式输出和 SQLite 会话历史；前端负责单页对话体验。RAG、检索和索引代码保留为后端可复用模块，但当前聊天链路默认不把任何工具接给模型。
 
 ## 功能
 
-- CLI：解析财报 PDF、切 chunk、写入本地向量索引。
-- RAG：混合检索文本 chunk，并补充表格候选摘要。
-- Chat：每轮先检索证据，再调用一次 OpenAI-compatible chat model 合成答案，支持流式 `reasoning_content`。
-- History：SQLite 持久化当前 chat box 的问答历史。
-- Frontend：DeepSeek-like 双栏 chatbox，按思考、工具、回答分区展示，带 token/context 10 格占用条和引用页码。
+- Chat：调用 OpenAI-compatible chat model，支持流式 `reasoning_content`。
+- History：SQLite 持久化默认会话，刷新页面后可恢复历史。
+- Frontend：金融风格单页 chatbox，支持 Markdown 和 GFM 表格渲染。
+- Usage：展示 token/context 占用，前端用 10 格占用条表达上下文压力。
+- RAG modules：保留本地 PDF ingest、向量 index、混合检索和 RAG service，便于后续重新接入工具。
 
 ## 环境变量
 
@@ -18,7 +18,7 @@
 cp .env.example .env
 ```
 
-核心配置。聊天模型可以直接使用 Xiaomi MiMo；embedding 可继续用 OpenRouter 或其他 OpenAI-compatible embedding provider：
+最小聊天配置：
 
 ```bash
 MIMO_API_KEY=your-mimo-api-key
@@ -27,43 +27,38 @@ CHAT_MODEL=mimo-v2.5-pro
 CHAT_THINKING_ENABLED=true
 CHAT_PASS_REASONING_HISTORY=true
 CHAT_STREAM_INCLUDE_USAGE=false
+CONTEXT_WINDOW_TOKENS=128000
+SESSION_DB_PATH=data/sessions.sqlite3
+TAVILY_API_KEY=your-tavily-api-key
+```
 
-OPENROUTER_API_KEY=your-openrouter-api-key
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+`CHAT_*` 优先于旧的 `OPENROUTER_*` 聊天配置；只设置 `MIMO_API_KEY` 且未设置 `CHAT_BASE_URL` 时，后端默认使用 `https://api.xiaomimimo.com/v1`。MiMo thinking 模式下，历史 assistant 的 `reasoning_content` 会随 SQLite 历史一起回传给后续请求。设置 `TAVILY_API_KEY` 后，模型可以自行决定是否调用 `tavily_search` 做网页搜索。
+
+如需继续准备本地 RAG 索引，再配置 embedding 和 MinerU：
+
+```bash
 EMBEDDING_API_KEY=your-embedding-api-key
 EMBEDDING_BASE_URL=https://openrouter.ai/api/v1
 EMBEDDING_MODEL=nvidia/llama-nemotron-embed-vl-1b-v2:free
-CONTEXT_WINDOW_TOKENS=128000
-SESSION_DB_PATH=data/sessions.sqlite3
 CHROMA_PERSIST_DIR=data/chroma
 CHROMA_COLLECTION_NAME=financial-report-chunks
+MINERU_API_TOKEN=your-mineru-api-token
+MINERU_BASE_URL=https://mineru.net
+MINERU_MODEL_VERSION=vlm
+MINERU_LANGUAGE=ch
 ```
-
-`CHAT_*` 优先于旧的 `OPENROUTER_*` 聊天配置；只设置 `MIMO_API_KEY` 且未设置 `CHAT_BASE_URL` 时，后端会默认使用 `https://api.xiaomimimo.com/v1`。小米 MiMo thinking 模式下，历史 assistant 的 `reasoning_content` 会随 SQLite 历史一起回传给后续请求。MiMo 文档未声明 `stream_options.include_usage`，所以示例里关闭该参数，前端上下文条会使用后端估算 token。
-
-如果要通过 MinerU 解析 PDF，再配置 `MINERU_API_TOKEN`、`MINERU_BASE_URL`、`MINERU_MODEL_VERSION` 和 `MINERU_LANGUAGE`。
 
 ## 准备数据
 
-安装 Python 依赖：
+聊天不依赖索引；以下命令只在需要本地 RAG 数据时运行。
 
 ```bash
 uv sync
-```
-
-解析 PDF：
-
-```bash
 uv run python main.py ingest --input-dir data/raw --artifact-dir data/processed/mineru
-```
-
-建立向量索引：
-
-```bash
 uv run python main.py index --chunks-path data/processed/chunks.json
 ```
 
-文档管理不在前端暴露；本地数据默认落在 `data/processed/`、`data/chroma/` 和 `data/sessions.sqlite3`。
+本地数据默认落在 `data/processed/`、`data/chroma/` 和 `data/sessions.sqlite3`。
 
 ## 启动
 
@@ -81,47 +76,48 @@ npm install
 npm run dev
 ```
 
-打开 `http://127.0.0.1:5173/`。前端会在浏览器 `localStorage` 中保存一个默认 `session_id`，刷新后通过 SQLite 恢复该会话历史。
+打开 `http://127.0.0.1:5173/`。前端会在浏览器 `localStorage` 中保存一个默认 `session_id`。
 
 ## API
 
 - `GET /health`：健康检查。
-- `POST /rag/retrieve`：RAG 工具接口，返回文本证据、表格候选、引用和检索元数据。
-- `POST /chat`：非流式问答，返回 `session_id`、`answer`、`citations`、`reasoning_content`、`usage`。
-- `POST /chat/stream`：SSE 问答，事件包括 `session`、`tool`、`status`、`reasoning_delta`、`answer_delta`、`usage`、`final`、`error`。
-- `GET /sessions/{session_id}`：恢复单个会话历史，包括 assistant 的 `reasoning_content`、RAG 工具状态和 usage。
+- `GET /sessions`：列出已有会话。
+- `GET /sessions/{session_id}`：恢复单个会话历史。
+- `POST /chat`：非流式问答，返回 `session_id`、`answer`、`citations`、`tool_results`、`reasoning_content`、`usage`。
+- `POST /chat/stream`：SSE 问答，事件包括 `session`、`status`、`reasoning_delta`、`tool_call`、`tool_result`、`answer_delta`、`usage`、`final`、`error`。
 
 `POST /chat` 示例：
 
 ```json
 {
-  "question": "贵州茅台 2024 年营业总收入是多少？",
-  "session_id": "local-default",
-  "top_k": 5
+  "question": "NVIDIA T4 GPU 是什么？",
+  "session_id": "local-default"
 }
 ```
 
-`usage` 中的 `context_ratio` 会驱动前端 10 格像素风上下文占用条；低占用为绿色，中等为黄色，高占用为红色。
-
-`POST /rag/retrieve` 示例：
-
-```json
-{
-  "query": "贵州茅台 2024 年营业总收入",
-  "top_k": 5,
-  "include_tables": true
-}
-```
+`usage.context_ratio` 会驱动前端 10 格上下文占用条；低占用为绿色，中等为黄色，高占用为红色。
 
 ## 代码结构
 
-- `app/api.py`：极简 HTTP/SSE API。
-- `app/chat_service.py`：固定的 RAG-first 问答流程。
-- `app/rag/`：RAG 工具服务和证据结构。
-- `app/retrieval/`：向量检索、BM25、query rewrite 和混合融合。
-- `app/ingestion/`：PDF 解析、chunk 生成和索引准备。
-- `app/session/`：SQLite 会话和 turn 历史。
-- `frontend/`：单页 React chat box。
+- `app/api.py`：FastAPI HTTP/SSE API。
+- `app/chat_service.py`：轻量聊天流程，负责历史拼接、模型调用、usage 解析和 turn 持久化。
+- `app/factory.py`：从环境变量构建 `ChatService` 的小型工厂。
+- `app/tools/`：OpenAI-compatible tool 抽象，目前包含 Tavily web search。
+- `app/session/`：SQLite session 和 turn 历史。
+- `app/ingestion/`：可选 PDF 解析和 chunk 生成。
+- `app/retrieval/`：可选向量检索、BM25、query rewrite 和混合融合。
+- `app/rag/`：可选 RAG evidence/citation 封装。
+- `app/tables/`：可选表格索引读取。
+- `frontend/`：React 单页 chatbox。
+
+新增工具时，优先在 `app/tools/` 下实现一个类，提供：
+
+- `name`：暴露给模型的唯一工具名。
+- `aliases`：可选，仅用于兼容模型输出的旧名称，不会重复暴露给模型。
+- `schema()`：OpenAI-compatible tool schema。
+- `run(arguments)`：执行工具并返回结构化结果，可选包含 `citations`。
+
+然后在 `app/factory.py` 注册到 `ChatService(tools=[...])`。工具 schema、别名、MiMo 文本工具调用兼容和执行错误都会由 `ToolRegistry` 统一处理。
 
 ## 验证
 

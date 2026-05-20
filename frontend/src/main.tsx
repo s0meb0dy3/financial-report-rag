@@ -9,6 +9,7 @@ import {
   type CitationResponse,
   type SessionMessageResponse,
   type SessionSummaryResponse,
+  type ToolResultResponse,
   type UsageResponse,
 } from "./api/client";
 import "./styles.css";
@@ -18,6 +19,7 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   citations: CitationResponse[];
+  toolResults: ToolResultResponse[];
   reasoning: string;
   usage: UsageResponse | null;
   startedAt?: number;
@@ -40,6 +42,7 @@ function mapMessage(message: SessionMessageResponse): Message {
     role: message.role,
     content: message.content,
     citations: message.citations ?? [],
+    toolResults: message.tool_results ?? [],
     reasoning: message.reasoning_content ?? "",
     usage: message.usage ?? null,
   };
@@ -54,9 +57,7 @@ function Icon({
     | "chevron"
     | "copy"
     | "menu"
-    | "more"
     | "plus"
-    | "search"
   className?: string;
 }) {
   const paths = {
@@ -64,9 +65,7 @@ function Icon({
     chevron: "m6 9 6 6 6-6",
     copy: "M8 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Zm-2 8H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1",
     menu: "M7 4h10M7 12h10M7 20h10",
-    more: "M6 12h.01M12 12h.01M18 12h.01",
     plus: "M12 5v14M5 12h14",
-    search: "m21 21-4.4-4.4M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z",
   };
   return (
     <svg className={`icon ${className}`} viewBox="0 0 24 24" aria-hidden="true">
@@ -151,22 +150,15 @@ function UsageBar({ usage, status }: { usage: UsageResponse | null; status: stri
   const tone = ratio >= 0.85 ? "danger" : ratio >= 0.6 ? "warning" : "safe";
   const used = usage?.context_used_tokens ?? usage?.prompt_tokens ?? 0;
   const win = usage?.context_window_tokens ?? 0;
-  const circumference = 2 * Math.PI * 7;
-  const offset = circumference - (ratio * circumference);
+  const activeCells = Math.min(10, Math.max(0, Math.ceil(ratio * 10)));
 
   return (
     <div className={`usage-pill ${tone}`} aria-label="会话上下文占用">
-      <svg className="usage-ring" viewBox="0 0 20 20" aria-hidden="true">
-        <circle className="ring-bg" cx="10" cy="10" r="7" />
-        <circle
-          className="ring-fg"
-          cx="10"
-          cy="10"
-          r="7"
-          strokeDasharray={circumference}
-          strokeDashoffset={offset}
-        />
-      </svg>
+      <div className="usage-cells" aria-hidden="true">
+        {Array.from({ length: 10 }).map((_, index) => (
+          <span className={index < activeCells ? "active" : ""} key={index} />
+        ))}
+      </div>
       <span className="usage-percent">{percent}%</span>
       <div className="usage-tooltip" role="tooltip">
         <div className="usage-tooltip-row">
@@ -226,6 +218,7 @@ function AssistantMessage({ message, now }: { message: Message; now: number }) {
     <article className="assistant-message">
       <div className="assistant-inner">
         <ReasoningBlock message={message} now={now} />
+        <ToolResults results={message.toolResults} />
         <section className="assistant-answer" aria-label="回答">
           <div className="markdown-body">
             {message.content ? (
@@ -241,6 +234,21 @@ function AssistantMessage({ message, now }: { message: Message; now: number }) {
         </div>
       </div>
     </article>
+  );
+}
+
+function ToolResults({ results }: { results: ToolResultResponse[] }) {
+  if (!results.length) return null;
+  return (
+    <section className="tool-results" aria-label="工具调用">
+      {results.map((result) => (
+        <div className={`tool-result ${result.status}`} key={result.id}>
+          <span>{result.name}</span>
+          <strong>{result.status === "running" ? "运行中" : result.status === "error" ? "失败" : "完成"}</strong>
+          {result.error ? <em>{result.error}</em> : null}
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -300,9 +308,6 @@ function Sidebar({
       <div className="brand-row">
         <div className="brand-mark">F</div>
         <span>fintell</span>
-        <button type="button" aria-label="搜索">
-          <Icon name="search" />
-        </button>
         <button type="button" aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"} onClick={onToggle}>
           <Icon name="menu" />
         </button>
@@ -323,7 +328,6 @@ function Sidebar({
                 onClick={() => onSelectSession(session.id)}
               >
                 <span>{session.title}</span>
-                <Icon name="more" />
               </button>
             ))}
           </div>
@@ -430,6 +434,7 @@ function App() {
         role: "user",
         content: question,
         citations: [],
+        toolResults: [],
         reasoning: "",
         usage: null,
       };
@@ -439,6 +444,7 @@ function App() {
         role: "assistant",
         content: "",
         citations: [],
+        toolResults: [],
         reasoning: "",
         usage: null,
         startedAt,
@@ -460,6 +466,28 @@ function App() {
             updateAssistant(assistantId, (m) => ({ ...m, usage: event.data }));
             return;
           }
+          if (event.event === "tool_call") {
+            updateAssistant(assistantId, (m) => ({
+              ...m,
+              toolResults: [
+                ...m.toolResults.filter((item) => item.id !== event.data.id),
+                { ...event.data, status: "running" },
+              ],
+            }));
+            setStatus("调用工具");
+            return;
+          }
+          if (event.event === "tool_result") {
+            updateAssistant(assistantId, (m) => ({
+              ...m,
+              toolResults: [
+                ...m.toolResults.filter((item) => item.id !== event.data.id),
+                event.data,
+              ],
+            }));
+            setStatus(event.data.status === "error" ? "工具失败" : "工具完成");
+            return;
+          }
           if (event.event === "reasoning_delta") {
             updateAssistant(assistantId, (m) => ({
               ...m,
@@ -479,6 +507,7 @@ function App() {
               ...m,
               content: event.data.answer,
               citations: event.data.citations,
+              toolResults: event.data.tool_results ?? m.toolResults,
               reasoning: event.data.reasoning_content || m.reasoning,
               usage: event.data.usage ?? m.usage,
               completedAt: Date.now(),

@@ -33,6 +33,7 @@ class AppConfig:
     pass_reasoning_history: bool = False
     stream_include_usage: bool = True
     session_db_path: str = DEFAULT_SESSION_DB_PATH
+    tavily_api_key: str = ""
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -87,6 +88,7 @@ class AppConfig:
             pass_reasoning_history=_env_bool("CHAT_PASS_REASONING_HISTORY", default=is_mimo),
             stream_include_usage=_env_bool("CHAT_STREAM_INCLUDE_USAGE", default=not is_mimo),
             session_db_path=os.environ.get("SESSION_DB_PATH", DEFAULT_SESSION_DB_PATH),
+            tavily_api_key=os.environ.get("TAVILY_API_KEY", ""),
         )
 
     def require_api_key(self) -> str:
