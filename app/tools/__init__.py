@@ -8,7 +8,7 @@ from app.tools.registry import (
     merge_tool_call_delta,
     tool_result_message,
 )
-from app.tools.reports import ListReportsTool, ReadPdfPageTool
+from app.tools.reports import ListReportsTool, ReadPdfPageTool, ReadTableOfContentsTool
 from app.tools.tavily_search import TavilySearchTool
 from app.tools.types import ToolCall, ToolExecutionResult
 
@@ -16,6 +16,7 @@ __all__ = [
     "TavilySearchTool",
     "ListReportsTool",
     "ReadPdfPageTool",
+    "ReadTableOfContentsTool",
     "ToolCall",
     "ToolExecutionResult",
     "ToolRegistry",

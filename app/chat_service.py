@@ -20,7 +20,8 @@ from app.tools.types import ChatTool
 
 SYSTEM_PROMPT = (
     "你是一个有帮助的财务分析助手。回答简洁、准确。"
-    "如果需要读取本地财报原文页码，先用 list_reports 确认 doc_id，再用 read_pdf_page 读取指定页。"
+    "如果需要读取本地财报原文页码，先用 list_reports 确认 doc_id，再用 read_toc 查看目录了解报告结构，"
+    "然后用 read_pdf_page 读取指定页。read_toc 返回的是物理页码，可以直接传给 read_pdf_page。"
     "如果你需要当前外部信息，可以自由调用可用工具；如果没有调用工具，不要声称已经检索过外部来源。"
     "引用本地财报内容时尽量说明报告名和页码。"
 )
@@ -116,11 +117,13 @@ class ChatService:
         question: str,
         *,
         session_id: str = "default",
+        doc_id: str | None = None,
+        visible_page: int | None = None,
     ) -> ChatResult:
         resolved_question = _clean_question(question)
         active_session_id = session_id or "default"
         self.session_store.ensure_session(active_session_id)
-        messages = self._build_messages(resolved_question, active_session_id)
+        messages = self._build_messages(resolved_question, active_session_id, doc_id=doc_id, visible_page=visible_page)
         answer, reasoning, usage, citations, tool_results = self._answer_with_tools(messages)
         return self._record(
             active_session_id,
@@ -137,6 +140,8 @@ class ChatService:
         question: str,
         *,
         session_id: str = "default",
+        doc_id: str | None = None,
+        visible_page: int | None = None,
     ) -> Iterable[dict[str, Any]]:
         resolved_question = _clean_question(question)
         active_session_id = session_id or "default"
@@ -144,7 +149,7 @@ class ChatService:
         yield {"event": "session", "data": {"session_id": active_session_id}}
         yield {"event": "status", "data": {"message": "生成回答"}}
 
-        messages = self._build_messages(resolved_question, active_session_id)
+        messages = self._build_messages(resolved_question, active_session_id, doc_id=doc_id, visible_page=visible_page)
         yield {"event": "usage", "data": self._usage_for_messages(messages, response_usage=None).to_dict()}
 
         answer_parts: list[str] = []
@@ -317,8 +322,14 @@ class ChatService:
         self,
         question: str,
         session_id: str,
+        *,
+        doc_id: str | None = None,
+        visible_page: int | None = None,
     ) -> list[dict[str, Any]]:
-        messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        system_content = SYSTEM_PROMPT
+        if doc_id and visible_page and visible_page > 0:
+            system_content += f"\n\n用户当前正在查看文档 {doc_id} 的第 {visible_page} 页。如果用户的问题与当前页相关，可以直接读取该页内容。"
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
         for turn in self.session_store.list_turns(session_id)[-self.max_history_turns :]:
             messages.append({"role": "user", "content": turn.user_content})
             assistant_message: dict[str, Any] = {

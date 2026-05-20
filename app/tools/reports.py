@@ -38,6 +38,49 @@ class ListReportsTool:
         }
 
 
+class ReadTableOfContentsTool:
+    """Read the table of contents (bookmarks) from a financial report PDF."""
+
+    name = "read_toc"
+
+    def __init__(self, document_service: DocumentService):
+        self.document_service = document_service
+
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": (
+                    "Read the table of contents from a local financial report PDF. "
+                    "Returns chapter/section titles with page numbers. "
+                    "Use this before reading specific pages so you know which page to look at. "
+                    "The returned page numbers are physical page numbers — pass them directly to read_pdf_page."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "doc_id": {
+                            "type": "string",
+                            "description": "Document id from list_reports or a citation.",
+                        },
+                    },
+                    "required": ["doc_id"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+    def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        doc_id = str(arguments.get("doc_id") or "").strip()
+        if not doc_id:
+            raise ValueError("doc_id must not be blank")
+        try:
+            return self.document_service.get_toc(doc_id)
+        except DocumentServiceError as exc:
+            raise ValueError(str(exc)) from exc
+
+
 class ReadPdfPageTool:
     """Read one precise page from a MinerU parsed PDF."""
 

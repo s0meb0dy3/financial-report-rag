@@ -902,7 +902,7 @@ function App() {
       setMessages((items) => [...items, userMessage, assistantMessage]);
 
       try {
-        await streamChat({ question, session_id: sessionId }, (event) => {
+        await streamChat({ question, session_id: sessionId, doc_id: activeDocumentId || null, visible_page: activeDocumentId ? visiblePage : null }, (event) => {
           if (event.event === "status") {
             setStatus(event.data.message);
             return;
@@ -973,7 +973,7 @@ function App() {
         setIsSending(false);
       }
     },
-    [input, isSending, sessionId, updateAssistant, refreshSessions],
+    [input, isSending, sessionId, activeDocumentId, visiblePage, updateAssistant, refreshSessions],
   );
 
   return (

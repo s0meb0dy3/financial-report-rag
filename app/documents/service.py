@@ -67,6 +67,49 @@ class DocumentService:
         self.raw_dir = Path(raw_dir)
         self.mineru_dir = Path(mineru_dir)
 
+    def get_toc(self, doc_id: str) -> dict[str, Any]:
+        """Return the table of contents (bookmarks) from a PDF.
+
+        Uses PyMuPDF to read embedded PDF outlines. Returns entries with both
+        physical page numbers (for read_pdf_page) and logical page labels.
+        """
+        import pymupdf
+
+        doc = self.get_document(doc_id)
+        pdf_path = self.get_pdf_path(doc_id)
+
+        pdf = pymupdf.open(str(pdf_path))
+        try:
+            toc = pdf.get_toc(simple=True)
+            page_labels = _build_page_label_map(pdf)
+        finally:
+            pdf.close()
+
+        entries: list[dict[str, Any]] = []
+        for level, title, physical_page in toc:
+            if not title:
+                continue
+            logical = page_labels.get(physical_page)
+            entries.append({
+                "level": level,
+                "title": title.strip(),
+                "page": physical_page,
+                "page_label": logical,
+            })
+
+        summary = f"共 {doc.page_count} 页"
+        first_label = page_labels.get(1)
+        if first_label and first_label != "1":
+            summary += f"，逻辑页码从 {first_label} 开始（封面等前言页不计入正文页码）"
+
+        return {
+            "doc_id": doc.id,
+            "doc_name": doc.name,
+            "page_count": doc.page_count,
+            "summary": summary,
+            "entries": entries,
+        }
+
     def list_documents(self) -> list[DocumentInfo]:
         docs: list[DocumentInfo] = []
         if self.mineru_dir.exists():
@@ -167,6 +210,24 @@ class DocumentService:
                         part_dir = artifact_dir / "parts" / f"part-{int(part.get('part_index', 1)):03d}"
                     return _read_page_from_content_list(part_dir / "content_list_v2.json", page - start + 1)
         return _read_page_from_content_list(artifact_dir / "content_list_v2.json", page)
+
+
+def _build_page_label_map(pdf: Any) -> dict[int, str]:
+    """Build a mapping from 1-based physical page number to logical page label."""
+    labels: dict[int, str] = {}
+    try:
+        page_labels = pdf.get_page_labels()
+    except Exception:
+        return labels
+    if not page_labels:
+        return labels
+    for idx, label in enumerate(page_labels):
+        if isinstance(label, dict):
+            text = label.get("prefix", "") + str(label.get("start", idx + 1))
+            labels[idx + 1] = text
+        elif isinstance(label, str):
+            labels[idx + 1] = label
+    return labels
 
 
 def _page_count(manifest: dict[str, Any], artifact_dir: Path) -> int:

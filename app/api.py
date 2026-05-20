@@ -31,6 +31,8 @@ class UsageResponse(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1)
     session_id: str | None = None
+    doc_id: str | None = None
+    visible_page: int | None = None
 
 
 class CitationResponse(BaseModel):
@@ -267,6 +269,8 @@ def create_app(
             result = service.ask(
                 payload.question,
                 session_id=payload.session_id or "default",
+                doc_id=payload.doc_id,
+                visible_page=payload.visible_page,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -286,6 +290,8 @@ def create_app(
                 for item in service.stream(
                     question,
                     session_id=payload.session_id or "default",
+                    doc_id=payload.doc_id,
+                    visible_page=payload.visible_page,
                 ):
                     yield _sse(item.get("event", "status"), item.get("data", {}))
             except Exception as exc:

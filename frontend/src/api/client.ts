@@ -22,6 +22,8 @@ export type UsageResponse = {
 export type ChatRequest = {
   question: string;
   session_id?: string | null;
+  doc_id?: string | null;
+  visible_page?: number | null;
 };
 
 export type ChatResponse = {
