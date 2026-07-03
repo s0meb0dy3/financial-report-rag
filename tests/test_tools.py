@@ -96,6 +96,33 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(page["text"], "营收 100 亿元")
         self.assertEqual(page["citations"][0]["page"], 1)
 
+    def test_read_page_trims_blocks_with_text_budget(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "raw" / "report.pdf"
+            pdf.parent.mkdir(parents=True)
+            pdf.write_bytes(b"%PDF-1.4")
+            artifact = root / "mineru" / "doc-a"
+            write_json(
+                artifact / "manifest.json",
+                {"doc_id": "doc-a", "file_name": "report.pdf", "source_path": str(pdf)},
+            )
+            write_json(
+                artifact / "content_list_v2.json",
+                [
+                    [
+                        {"type": "paragraph", "content": {"paragraph_content": "A" * 900}},
+                        {"type": "paragraph", "content": {"paragraph_content": "B" * 900}},
+                    ]
+                ],
+            )
+            service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
+
+            page = ReadPdfPageTool(service).run({"doc_id": "doc-a", "page": 1, "max_chars": 1000})
+
+        self.assertTrue(page["truncated"])
+        self.assertLessEqual(sum(len(block["text"]) for block in page["blocks"]), 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

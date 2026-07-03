@@ -1,4 +1,5 @@
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
@@ -11,6 +12,9 @@ from app.chat_service import ChatService
 from app.documents import DocumentService, DocumentServiceError
 from app.factory import build_chat_service_from_env
 from app.session import SQLiteSessionStore, SessionSummary, SessionTurn
+
+
+logger = logging.getLogger(__name__)
 
 
 class UsageResponse(BaseModel):
@@ -295,7 +299,8 @@ def create_app(
                 ):
                     yield _sse(item.get("event", "status"), item.get("data", {}))
             except Exception as exc:
-                yield _sse("error", {"message": str(exc)})
+                logger.error("chat stream failed: %s", type(exc).__name__)
+                yield _sse("error", {"message": "请求失败，请查看后端日志。"})
 
         return StreamingResponse(
             event_stream(),

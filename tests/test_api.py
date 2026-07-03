@@ -114,6 +114,28 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("event: tool", body)
         self.assertIn('"answer": "测试回答。"', body)
 
+    def test_chat_stream_hides_internal_error_details(self) -> None:
+        client_mock = MagicMock()
+        client_mock.chat.completions.create.side_effect = RuntimeError("secret-token")
+
+        with TemporaryDirectory() as directory:
+            store = SQLiteSessionStore(Path(directory) / "sessions.sqlite3")
+            service = ChatService(session_store=store, client=client_mock, model="test-model")
+            with TestClient(create_app(chat_service=service, session_store=store)) as client:
+                with self.assertLogs("app.api", level="ERROR") as logs:
+                    response = client.post(
+                        "/chat/stream",
+                        json={"question": "营业总收入是多少？", "session_id": "session-1"},
+                    )
+
+        body = response.text
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: error", body)
+        self.assertIn("请求失败，请查看后端日志。", body)
+        self.assertNotIn("secret-token", body)
+        self.assertIn("RuntimeError", logs.output[0])
+        self.assertNotIn("secret-token", logs.output[0])
+
     def test_get_session_restores_chat_history(self) -> None:
         with TemporaryDirectory() as directory:
             store = SQLiteSessionStore(Path(directory) / "sessions.sqlite3")

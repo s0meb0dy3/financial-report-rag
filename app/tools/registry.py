@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from typing import Any
 
 from app.tools.types import ChatTool, ToolCall, ToolExecutionResult
@@ -25,8 +26,17 @@ class ToolRegistry:
         return [tool.schema() for tool in self._tools]
 
     def execute(self, call: ToolCall) -> ToolExecutionResult:
+        from app.tracing import get_tracer
+        tracer = get_tracer()
+        if tracer:
+            tracer.tool_call_start(call.id, call.name, call.arguments)
+        t0 = time.monotonic()
+
         tool = self._by_name.get(call.name)
         if tool is None:
+            duration_ms = (time.monotonic() - t0) * 1000
+            if tracer:
+                tracer.tool_call_end(call.id, call.name, "error", duration_ms, f"Unknown tool: {call.name}")
             return ToolExecutionResult(
                 id=call.id,
                 name=call.name,
@@ -38,6 +48,9 @@ class ToolRegistry:
         try:
             content = tool.run(call.arguments)
         except Exception as exc:
+            duration_ms = (time.monotonic() - t0) * 1000
+            if tracer:
+                tracer.tool_call_end(call.id, call.name, "error", duration_ms, str(exc))
             return ToolExecutionResult(
                 id=call.id,
                 name=call.name,
@@ -47,8 +60,9 @@ class ToolRegistry:
                 error=str(exc),
             )
 
+        duration_ms = (time.monotonic() - t0) * 1000
         citations = content.get("citations") if isinstance(content, dict) else None
-        return ToolExecutionResult(
+        result = ToolExecutionResult(
             id=call.id,
             name=call.name,
             arguments=call.arguments,
@@ -56,6 +70,10 @@ class ToolRegistry:
             content=content if isinstance(content, dict) else {"result": content},
             citations=[item for item in citations if isinstance(item, dict)] if isinstance(citations, list) else [],
         )
+        if tracer:
+            summary = json.dumps(result.content, ensure_ascii=False)[:200]
+            tracer.tool_call_end(call.id, call.name, "done", duration_ms, summary)
+        return result
 
 
 def extract_tool_calls(message: Any) -> list[ToolCall]:

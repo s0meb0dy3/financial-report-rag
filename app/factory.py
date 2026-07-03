@@ -4,7 +4,8 @@ from app.chat_service import ChatService
 from app.config import AppConfig
 from app.documents import DocumentService
 from app.session import SQLiteSessionStore
-from app.tools import ListReportsTool, ReadPdfPageTool, ReadTableOfContentsTool, TavilySearchTool
+from app.tools import CreateChartTool, ListReportsTool, ReadPdfPageTool, ReadTableOfContentsTool, TavilySearchTool
+from app.tracing import TracingConfig
 
 
 def build_chat_service_from_env(
@@ -21,8 +22,15 @@ def build_chat_service_from_env(
         ReadTableOfContentsTool(resolved_document_service),
         ReadPdfPageTool(resolved_document_service),
     ]
+    tools.append(CreateChartTool())
     if config.tavily_api_key:
         tools.append(TavilySearchTool(api_key=config.tavily_api_key))
+    tracing_config = TracingConfig(
+        enabled=config.tracing_enabled,
+        dir=config.tracing_dir,
+        log_input_messages=config.tracing_log_input_messages,
+        max_chars=config.tracing_max_chars,
+    )
     return ChatService(
         session_store=session_store or SQLiteSessionStore(config.session_db_path),
         client=client,
@@ -32,6 +40,7 @@ def build_chat_service_from_env(
         pass_reasoning_history=config.pass_reasoning_history,
         stream_include_usage=config.stream_include_usage,
         tools=tools,
+        tracing_config=tracing_config,
     )
 
 

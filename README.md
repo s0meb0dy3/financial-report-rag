@@ -1,15 +1,15 @@
 # Fintell
 
-极简前后端分离 Chatbox。后端负责 OpenAI-compatible 聊天、流式输出、工具调用和 SQLite 会话历史；前端负责单页对话体验。当前版本不包含 RAG、PDF 解析、向量索引或文档管理，原始财报 PDF 仍保留在 `data/raw/` 供以后扩展。
+极简前后端分离财报 Chatbox。后端负责 OpenAI-compatible 聊天、流式输出、工具调用、本地财报页读取和 SQLite 会话历史；前端负责单页对话、图表和 PDF 预览。当前版本不包含 RAG、向量索引或在线文档管理，PDF 文本依赖 `data/processed/mineru/` 下已有的 MinerU 解析结果。
 
 ## 功能
 
 - Chat：调用 OpenAI-compatible chat model，支持流式最终回答。
 - Reasoning：兼容 MiMo 的 `reasoning_content` 流式展示和历史回传。
-- Tools：保留一个轻量工具抽象层，目前可选接入 Tavily web search。
+- Tools：轻量工具抽象层，内置本地财报读取和图表生成，可选接入 Tavily web search。
 - History：SQLite 持久化会话，刷新页面后可恢复历史。
 - Usage：展示 token/context 占用，前端用 10 格占用条表达上下文压力。
-- Frontend：金融风格单页 chatbox，支持 Markdown 和 GFM 表格渲染。
+- Frontend：金融风格单页 chatbox，支持 Markdown、GFM 表格、ECharts 图表和 PDF 预览。
 
 ## 环境变量
 
@@ -22,12 +22,12 @@ cp .env.example .env
 最小配置：
 
 ```bash
-MIMO_API_KEY=your-mimo-api-key
-CHAT_BASE_URL=https://api.xiaomimimo.com/v1
-CHAT_MODEL=mimo-v2.5-pro
-CHAT_THINKING_ENABLED=true
-CHAT_PASS_REASONING_HISTORY=true
-CHAT_STREAM_INCLUDE_USAGE=false
+CHAT_API_KEY=your-deepseek-api-key
+CHAT_BASE_URL=https://api.deepseek.com
+CHAT_MODEL=deepseek-v4-flash
+CHAT_THINKING_ENABLED=false
+CHAT_PASS_REASONING_HISTORY=false
+CHAT_STREAM_INCLUDE_USAGE=true
 CONTEXT_WINDOW_TOKENS=128000
 SESSION_DB_PATH=data/sessions.sqlite3
 ```
@@ -38,7 +38,7 @@ SESSION_DB_PATH=data/sessions.sqlite3
 TAVILY_API_KEY=your-tavily-api-key
 ```
 
-`CHAT_*` 优先于旧的 `OPENROUTER_*`/`OPENAI_*` 配置；只设置 `MIMO_API_KEY` 且未设置 `CHAT_BASE_URL` 时，后端默认使用 `https://api.xiaomimimo.com/v1`。MiMo thinking 模式下，历史 assistant 的 `reasoning_content` 会随 SQLite 历史一起回传给后续请求。
+默认使用 DeepSeek 的 OpenAI-compatible API。切换到其他兼容模型时，只改 `CHAT_API_KEY`、`CHAT_BASE_URL` 和 `CHAT_MODEL`。`CHAT_*` 优先于旧的 `MIMO_*`/`OPENROUTER_*`/`OPENAI_*` 配置；只设置旧 provider key 时仍保留对应兜底行为。MiMo thinking 模式下，历史 assistant 的 `reasoning_content` 会随 SQLite 历史一起回传给后续请求。
 
 ## 启动
 
@@ -71,6 +71,9 @@ npm run dev
 - `GET /health`：健康检查。
 - `GET /sessions`：列出已有会话。
 - `GET /sessions/{session_id}`：恢复单个会话历史。
+- `GET /documents`：列出已解析的本地财报。
+- `GET /documents/{doc_id}/pdf`：预览原始 PDF。
+- `GET /documents/{doc_id}/pages/{page}`：读取指定 PDF 页文本。
 - `POST /chat`：非流式问答。
 - `POST /chat/stream`：SSE 问答，事件包括 `session`、`status`、`reasoning_delta`、`tool_call`、`tool_result`、`answer_delta`、`usage`、`final`、`error`。
 
@@ -89,10 +92,11 @@ npm run dev
 - `app/chat_service.py`：聊天流程，负责历史拼接、模型调用、工具循环、usage 解析和 turn 持久化。
 - `app/config.py`：环境变量读取。
 - `app/factory.py`：从环境变量构建 `ChatService`。
+- `app/documents/`：读取本地 PDF 和 MinerU 页级解析结果。
 - `app/session/`：SQLite session 和 turn 历史。
-- `app/tools/`：OpenAI-compatible tool 抽象，目前包含 Tavily web search。
+- `app/tools/`：OpenAI-compatible tool 抽象，包含本地报告读取、图表生成和 Tavily web search。
 - `frontend/`：React 单页 chatbox。
-- `data/raw/`：保留原始财报 PDF，当前运行链路不会读取。
+- `data/raw/`：原始财报 PDF，PDF 预览和来源定位会读取。
 
 新增工具时，在 `app/tools/` 下实现一个类：
 

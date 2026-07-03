@@ -152,9 +152,28 @@ class ReadPdfPageTool:
             "page": parsed_page.page,
             "text": text,
             "truncated": truncated,
-            "blocks": parsed_page.blocks,
+            "blocks": _trim_blocks(parsed_page.blocks, max_chars),
             "citations": [citation],
         }
+
+
+def _trim_blocks(blocks: list[dict[str, Any]], max_chars: int) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    remaining = max_chars
+    for block in blocks:
+        if remaining <= 0:
+            break
+        text = str(block.get("text") or "")
+        if not text:
+            continue
+        trimmed = text[:remaining]
+        item = dict(block)
+        item["text"] = trimmed
+        if len(text) > len(trimmed):
+            item["truncated"] = True
+        result.append(item)
+        remaining -= len(trimmed) + 1
+    return result
 
 
 def _as_int(value: Any, *, default: int) -> int:

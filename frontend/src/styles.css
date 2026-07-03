@@ -482,6 +482,18 @@ button {
   white-space: nowrap;
 }
 
+.tool-result:has(.echart-container) {
+  display: block;
+  padding: 0;
+  background: none;
+  border-left: none;
+}
+
+.echart-container {
+  width: 100%;
+  height: 400px;
+}
+
 .markdown-body {
   margin-top: 20px;
   color: var(--ink);

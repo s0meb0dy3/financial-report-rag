@@ -19,9 +19,12 @@ import {
   type ToolResultResponse,
   type UsageResponse,
 } from "./api/client";
+import { EChart } from "./components/EChart";
 import "./styles.css";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+type PdfDocument = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
 
 type Message = {
   id: string;
@@ -284,6 +287,7 @@ function PdfScrollViewer({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [totalPages, setTotalPages] = useState(0);
+  const [pdfDoc, setPdfDoc] = useState<PdfDocument | null>(null);
   const [pageHeights, setPageHeights] = useState<number[]>([]);
   const [renderRange, setRenderRange] = useState({ start: 0, end: 0 });
   const scaleRef = useRef(1);
@@ -292,6 +296,9 @@ function PdfScrollViewer({
   // Load PDF and measure all pages
   useEffect(() => {
     let cancelled = false;
+    setPdfDoc(null);
+    setPageHeights([]);
+    setRenderRange({ start: 0, end: 0 });
     const loadingTask = pdfjsLib.getDocument(documentPdfUrl(docId));
 
     loadingTask.promise.then(async (pdf) => {
@@ -315,6 +322,7 @@ function PdfScrollViewer({
 
       if (!cancelled) {
         setTotalPages(numPages);
+        setPdfDoc(pdf);
         setPageHeights(heights);
       }
     }).catch(() => {});
@@ -417,7 +425,7 @@ function PdfScrollViewer({
   return (
     <div className="pdf-scroll-container" ref={containerRef}>
       <div className="pdf-scroll-spacer" style={{ height: totalHeight, position: "relative" }}>
-        {pageHeights.length > 0 &&
+        {pdfDoc && pageHeights.length > 0 &&
           Array.from({ length: renderRange.end - renderRange.start }, (_, i) => {
             const pageIndex = renderRange.start + i;
             const pageNum = pageIndex + 1;
@@ -431,7 +439,7 @@ function PdfScrollViewer({
                 className="pdf-page-slot"
                 style={{ position: "absolute", top, left: 0, right: 0 }}
               >
-                <PdfPageCanvas docId={docId} page={pageNum} scale={scaleRef.current} />
+                <PdfPageCanvas pdf={pdfDoc} page={pageNum} scale={scaleRef.current} />
                 <span className="pdf-page-number">{pageNum}</span>
               </div>
             );
@@ -441,23 +449,19 @@ function PdfScrollViewer({
   );
 }
 
-function PdfPageCanvas({ docId, page, scale }: { docId: string; page: number; scale: number }) {
+function PdfPageCanvas({ pdf, page, scale }: { pdf: PdfDocument; page: number; scale: number }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    let loadingTask: pdfjsLib.PDFDocumentLoadingTask | null = null;
     let renderTask: { cancel: () => void; promise: Promise<unknown> } | null = null;
 
     async function renderPage() {
       const canvas = canvasRef.current;
-      if (!canvas || !docId) return;
+      if (!canvas) return;
 
       setError("");
-      loadingTask = pdfjsLib.getDocument(documentPdfUrl(docId));
-      const pdf = await loadingTask.promise;
-      if (cancelled) return;
       const boundedPage = Math.min(Math.max(1, page), pdf.numPages);
       const pdfPage = await pdf.getPage(boundedPage);
       if (cancelled) return;
@@ -471,10 +475,14 @@ function PdfPageCanvas({ docId, page, scale }: { docId: string; page: number; sc
       canvas.height = Math.floor(viewport.height * pixelRatio);
       canvas.style.width = `${Math.floor(viewport.width)}px`;
       canvas.style.height = `${Math.floor(viewport.height)}px`;
-      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-      context.clearRect(0, 0, viewport.width, viewport.height);
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, canvas.width, canvas.height);
 
-      renderTask = pdfPage.render({ canvasContext: context, viewport });
+      renderTask = pdfPage.render({
+        canvas,
+        viewport,
+        transform: pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0],
+      });
       await renderTask.promise;
     }
 
@@ -486,9 +494,8 @@ function PdfPageCanvas({ docId, page, scale }: { docId: string; page: number; sc
     return () => {
       cancelled = true;
       renderTask?.cancel();
-      void loadingTask?.destroy();
     };
-  }, [docId, page, scale]);
+  }, [pdf, page, scale]);
 
   return (
     <div className="pdf-canvas-wrap">
@@ -637,13 +644,26 @@ function ToolResults({ results }: { results: ToolResultResponse[] }) {
   if (!results.length) return null;
   return (
     <section className="tool-results" aria-label="工具调用">
-      {results.map((result) => (
-        <div className={`tool-result ${result.status}`} key={result.id}>
-          <span>{result.name}</span>
-          <strong>{result.status === "running" ? "运行中" : result.status === "error" ? "失败" : "完成"}</strong>
-          {result.error ? <em>{result.error}</em> : null}
-        </div>
-      ))}
+      {results.map((result) => {
+        const chartOption = result.content?.chart_option as import("echarts").EChartsOption | undefined;
+        const isChart =
+          result.name === "create_chart" &&
+          result.status === "done" &&
+          chartOption;
+        return (
+          <div className={`tool-result ${result.status}`} key={result.id}>
+            {isChart ? (
+              <EChart option={chartOption} />
+            ) : (
+              <>
+                <span>{result.name}</span>
+                <strong>{result.status === "running" ? "运行中" : result.status === "error" ? "失败" : "完成"}</strong>
+                {result.error ? <em>{result.error}</em> : null}
+              </>
+            )}
+          </div>
+        );
+      })}
     </section>
   );
 }
