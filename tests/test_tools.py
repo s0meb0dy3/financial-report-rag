@@ -4,13 +4,36 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app.documents import DocumentService
-from app.tools import ListReportsTool, ReadPdfPageTool
+from app.tools import ListReportsTool, ReadPdfPageTool, SearchReportTextTool
 from app.tools import ToolRegistry, extract_text_tool_calls
 
 
 def write_json(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def build_search_document_service(root: Path) -> DocumentService:
+    pdf = root / "raw" / "report.pdf"
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF-1.4")
+    for doc_id, pages in {
+        "doc-a": ["第一页营收 100 亿元", "第二页净利润 20 亿元"],
+        "doc-b": ["第一页营收 50 亿元"],
+    }.items():
+        artifact = root / "mineru" / doc_id
+        write_json(
+            artifact / "manifest.json",
+            {"doc_id": doc_id, "file_name": "report.pdf", "source_path": str(pdf), "page_count": len(pages)},
+        )
+        write_json(
+            artifact / "content_list_v2.json",
+            [
+                [{"type": "paragraph", "content": {"paragraph_content": text}}]
+                for text in pages
+            ],
+        )
+    return DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
 
 
 class FakeTool:
@@ -122,6 +145,41 @@ class ToolRegistryTests(unittest.TestCase):
 
         self.assertTrue(page["truncated"])
         self.assertLessEqual(sum(len(block["text"]) for block in page["blocks"]), 1000)
+
+    def test_search_report_text_finds_page_with_citation(self) -> None:
+        with TemporaryDirectory() as directory:
+            service = build_search_document_service(Path(directory))
+
+            result = SearchReportTextTool(service).run({"doc_id": "doc-a", "query": "净利润"})
+
+        self.assertEqual(result["results"][0]["doc_id"], "doc-a")
+        self.assertEqual(result["results"][0]["page"], 2)
+        self.assertIn("净利润", result["results"][0]["snippet"])
+        self.assertEqual(result["citations"][0]["page"], 2)
+
+    def test_search_report_text_can_search_all_docs_and_cap_results(self) -> None:
+        with TemporaryDirectory() as directory:
+            service = build_search_document_service(Path(directory))
+
+            result = SearchReportTextTool(service).run({"query": "营收", "max_results": 1})
+
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["doc_id"], "doc-a")
+
+    def test_search_report_text_searches_all_docs_by_default(self) -> None:
+        with TemporaryDirectory() as directory:
+            service = build_search_document_service(Path(directory))
+
+            result = SearchReportTextTool(service).run({"query": "营收", "max_results": 5})
+
+        self.assertEqual([item["doc_id"] for item in result["results"]], ["doc-a", "doc-b"])
+
+    def test_search_report_text_rejects_blank_query(self) -> None:
+        with TemporaryDirectory() as directory:
+            service = build_search_document_service(Path(directory))
+
+            with self.assertRaisesRegex(ValueError, "query must not be blank"):
+                SearchReportTextTool(service).run({"query": "  "})
 
 
 if __name__ == "__main__":

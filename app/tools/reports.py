@@ -157,6 +157,89 @@ class ReadPdfPageTool:
         }
 
 
+class SearchReportTextTool:
+    """Plain text search over MinerU parsed report pages."""
+
+    name = "search_report_text"
+
+    def __init__(self, document_service: DocumentService, *, default_max_results: int = 5):
+        self.document_service = document_service
+        self.default_max_results = default_max_results
+
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": (
+                    "Search local parsed financial report text and return matching pages. "
+                    "Use this before read_pdf_page when you need to locate where a topic appears."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Text to search for in parsed report pages.",
+                        },
+                        "doc_id": {
+                            "type": "string",
+                            "description": "Optional document id from list_reports. If omitted, search all reports.",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 20,
+                            "description": "Maximum number of page matches to return.",
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+    def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            raise ValueError("query must not be blank")
+
+        doc_id = str(arguments.get("doc_id") or "").strip()
+        max_results = min(20, max(1, _as_int(arguments.get("max_results"), default=self.default_max_results)))
+        try:
+            docs = [self.document_service.get_document(doc_id)] if doc_id else self.document_service.list_documents()
+        except DocumentServiceError as exc:
+            raise ValueError(str(exc)) from exc
+        query_lower = query.lower()
+
+        results: list[dict[str, Any]] = []
+        citations: list[dict[str, Any]] = []
+        for doc in docs:
+            for page in range(1, doc.page_count + 1):
+                try:
+                    parsed_page = self.document_service.read_page(doc.id, page)
+                except DocumentServiceError:
+                    continue
+                index = parsed_page.text.lower().find(query_lower)
+                if index < 0:
+                    continue
+                item = {
+                    "doc_id": parsed_page.doc_id,
+                    "doc_name": parsed_page.doc_name,
+                    "page": parsed_page.page,
+                    "snippet": _snippet(parsed_page.text, index, len(query)),
+                }
+                results.append(item)
+                citations.append({
+                    "doc_id": parsed_page.doc_id,
+                    "doc_name": parsed_page.doc_name,
+                    "page": parsed_page.page,
+                })
+                if len(results) >= max_results:
+                    return {"query": query, "results": results, "citations": citations}
+        return {"query": query, "results": results, "citations": citations}
+
+
 def _trim_blocks(blocks: list[dict[str, Any]], max_chars: int) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     remaining = max_chars
@@ -181,3 +264,11 @@ def _as_int(value: Any, *, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _snippet(text: str, index: int, query_length: int, *, radius: int = 80) -> str:
+    start = max(0, index - radius)
+    end = min(len(text), index + query_length + radius)
+    prefix = "..." if start else ""
+    suffix = "..." if end < len(text) else ""
+    return prefix + text[start:end].strip() + suffix

@@ -56,6 +56,12 @@ uv run python main.py serve --reload
 uv run python main.py chat "你好"
 ```
 
+真实模型 smoke check：
+
+```bash
+uv run python main.py chat "用一句话介绍你自己" --session-id smoke
+```
+
 前端：
 
 ```bash

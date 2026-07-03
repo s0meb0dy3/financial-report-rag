@@ -4,7 +4,14 @@ from app.chat_service import ChatService
 from app.config import AppConfig
 from app.documents import DocumentService
 from app.session import SQLiteSessionStore
-from app.tools import CreateChartTool, ListReportsTool, ReadPdfPageTool, ReadTableOfContentsTool, TavilySearchTool
+from app.tools import (
+    CreateChartTool,
+    ListReportsTool,
+    ReadPdfPageTool,
+    ReadTableOfContentsTool,
+    SearchReportTextTool,
+    TavilySearchTool,
+)
 from app.tracing import TracingConfig
 
 
@@ -20,6 +27,7 @@ def build_chat_service_from_env(
     tools = [
         ListReportsTool(resolved_document_service),
         ReadTableOfContentsTool(resolved_document_service),
+        SearchReportTextTool(resolved_document_service),
         ReadPdfPageTool(resolved_document_service),
     ]
     tools.append(CreateChartTool())

@@ -190,7 +190,7 @@ class ChatServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "question must not be blank"):
                 service.ask("  ", session_id="session-1")
 
-    def test_ask_includes_recent_history(self) -> None:
+    def test_ask_includes_all_history_by_default(self) -> None:
         client = MagicMock()
         client.chat.completions.create.return_value = make_response("第二轮回答")
 
@@ -202,15 +202,41 @@ class ChatServiceTests(unittest.TestCase):
                 assistant_content="第一轮回答",
                 citations=[],
             )
+            store.record_turn(
+                "session-1",
+                user_content="第二问",
+                assistant_content="第二轮回答",
+                citations=[],
+            )
             service = ChatService(session_store=store, client=client, model="test-model")
 
-            service.ask("第二问", session_id="session-1")
+            service.ask("第三问", session_id="session-1")
 
         messages = client.chat.completions.create.call_args.kwargs["messages"]
-        self.assertEqual([message["role"] for message in messages], ["system", "user", "assistant", "user"])
+        self.assertEqual([message["role"] for message in messages], ["system", "user", "assistant", "user", "assistant", "user"])
         self.assertEqual(messages[1]["content"], "第一问")
         self.assertEqual(messages[2]["content"], "第一轮回答")
         self.assertEqual(messages[3]["content"], "第二问")
+        self.assertEqual(messages[4]["content"], "第二轮回答")
+        self.assertEqual(messages[5]["content"], "第三问")
+
+    def test_ask_can_cap_history_turns(self) -> None:
+        client = MagicMock()
+        client.chat.completions.create.return_value = make_response("第三轮回答")
+
+        with TemporaryDirectory() as directory:
+            store = SQLiteSessionStore(Path(directory) / "sessions.sqlite3")
+            store.record_turn("session-1", user_content="第一问", assistant_content="第一轮回答", citations=[])
+            store.record_turn("session-1", user_content="第二问", assistant_content="第二轮回答", citations=[])
+            service = ChatService(session_store=store, client=client, model="test-model", max_history_turns=1)
+
+            service.ask("第三问", session_id="session-1")
+
+        messages = client.chat.completions.create.call_args.kwargs["messages"]
+        self.assertEqual([message["role"] for message in messages], ["system", "user", "assistant", "user"])
+        self.assertEqual(messages[1]["content"], "第二问")
+        self.assertEqual(messages[2]["content"], "第二轮回答")
+        self.assertEqual(messages[3]["content"], "第三问")
 
     def test_stream_emits_minimal_events_and_records_turn(self) -> None:
         client = MagicMock()

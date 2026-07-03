@@ -23,7 +23,8 @@ from app.tools.types import ChatTool
 SYSTEM_PROMPT = (
     "你是一个有帮助的财务分析助手。回答简洁、准确。"
     "如果需要读取本地财报原文页码，先用 list_reports 确认 doc_id，再用 read_toc 查看目录了解报告结构，"
-    "然后用 read_pdf_page 读取指定页。read_toc 返回的是物理页码，可以直接传给 read_pdf_page。"
+    "也可以用 search_report_text 搜索关键词定位相关页，再用 read_pdf_page 读取指定页。"
+    "read_toc 和 search_report_text 返回的是物理页码，可以直接传给 read_pdf_page。"
     "如果你需要当前外部信息，可以自由调用可用工具；如果没有调用工具，不要声称已经检索过外部来源。"
     "引用本地财报内容时尽量说明报告名和页码。"
     "如果用户需要可视化数据，使用 create_chart 工具生成图表。图表会在回答中直接展示。"
@@ -96,7 +97,7 @@ class ChatService:
         session_store: SQLiteSessionStore,
         client: OpenAI,
         model: str = DEFAULT_CHAT_MODEL,
-        max_history_turns: int = 6,
+        max_history_turns: int | None = None,
         context_window_tokens: int = 128000,
         thinking_enabled: bool = False,
         pass_reasoning_history: bool = False,
@@ -108,7 +109,7 @@ class ChatService:
         self.session_store = session_store
         self.client = client
         self.model = model
-        self.max_history_turns = max_history_turns
+        self.max_history_turns = max_history_turns if max_history_turns is None else max(1, max_history_turns)
         self.context_window_tokens = max(1, context_window_tokens)
         self.thinking_enabled = thinking_enabled
         self.pass_reasoning_history = pass_reasoning_history
@@ -438,7 +439,10 @@ class ChatService:
         if doc_id and visible_page and visible_page > 0:
             system_content += f"\n\n用户当前正在查看文档 {doc_id} 的第 {visible_page} 页。如果用户的问题与当前页相关，可以直接读取该页内容。"
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
-        for turn in self.session_store.list_turns(session_id)[-self.max_history_turns :]:
+        turns = self.session_store.list_turns(session_id)
+        if self.max_history_turns is not None:
+            turns = turns[-self.max_history_turns :]
+        for turn in turns:
             messages.append({"role": "user", "content": turn.user_content})
             assistant_message: dict[str, Any] = {
                 "role": "assistant",

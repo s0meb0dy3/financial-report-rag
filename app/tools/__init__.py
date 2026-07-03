@@ -9,7 +9,7 @@ from app.tools.registry import (
     tool_result_message,
 )
 from app.tools.charts import CreateChartTool
-from app.tools.reports import ListReportsTool, ReadPdfPageTool, ReadTableOfContentsTool
+from app.tools.reports import ListReportsTool, ReadPdfPageTool, ReadTableOfContentsTool, SearchReportTextTool
 from app.tools.tavily_search import TavilySearchTool
 from app.tools.types import ToolCall, ToolExecutionResult
 
@@ -19,6 +19,7 @@ __all__ = [
     "ListReportsTool",
     "ReadPdfPageTool",
     "ReadTableOfContentsTool",
+    "SearchReportTextTool",
     "ToolCall",
     "ToolExecutionResult",
     "ToolRegistry",
