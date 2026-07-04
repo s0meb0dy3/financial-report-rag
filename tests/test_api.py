@@ -1,8 +1,10 @@
 import unittest
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -12,12 +14,14 @@ from app.documents import DocumentService
 from app.session import SQLiteSessionStore
 
 
-def make_pdf_bytes() -> bytes:
+def make_pdf_bytes(text: str = "") -> bytes:
     import pymupdf
 
     pdf = pymupdf.open()
     try:
-        pdf.new_page()
+        page = pdf.new_page()
+        if text:
+            page.insert_text((72, 72), text)
         return pdf.tobytes()
     finally:
         pdf.close()
@@ -85,6 +89,28 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
+
+    def test_runtime_config_exposes_safe_model_status(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "CHAT_API_KEY": "secret",
+                "CHAT_BASE_URL": "https://example.test/v1",
+                "CHAT_MODEL": "custom-model",
+            },
+            clear=True,
+        ):
+            with TemporaryDirectory() as directory:
+                store = SQLiteSessionStore(Path(directory) / "sessions.sqlite3")
+                with TestClient(create_app(chat_service=build_test_service(store), session_store=store)) as client:
+                    response = client.get("/runtime/config")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["chat_model"], "custom-model")
+        self.assertEqual(response.json()["chat_base_url"], "https://example.test/v1")
+        self.assertTrue(response.json()["api_key_configured"])
+        self.assertFalse(response.json()["mineru_api_key_configured"])
+        self.assertNotIn("secret", response.text)
 
     def test_chat_returns_answer_and_session(self) -> None:
         with TemporaryDirectory() as directory:
@@ -221,17 +247,20 @@ class ApiTests(unittest.TestCase):
             ) as client:
                 uploaded = client.post(
                     "/documents?filename=upload.pdf",
-                    content=make_pdf_bytes(),
+                    content=make_pdf_bytes("uploaded page text"),
                     headers={"Content-Type": "application/pdf"},
                 )
                 doc_id = uploaded.json()["id"]
                 listed = client.get("/documents")
+                page = client.get(f"/documents/{doc_id}/pages/1")
                 deleted = client.delete(f"/documents/{doc_id}")
 
         self.assertEqual(uploaded.status_code, 200)
-        self.assertEqual(uploaded.json()["parsed"], False)
+        self.assertEqual(uploaded.json()["parsed"], True)
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(listed.json()[0]["name"], "upload.pdf")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("uploaded page text", page.json()["text"])
         self.assertEqual(deleted.status_code, 204)
 
     def test_document_upload_rejects_invalid_pdf(self) -> None:

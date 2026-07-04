@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.chat_service import ChatService
+from app.config import AppConfig
 from app.documents import DocumentService, DocumentServiceError
 from app.factory import build_chat_service_from_env
 from app.session import SQLiteSessionStore, SessionSummary, SessionTurn
@@ -102,6 +103,14 @@ class DocumentPageResponse(BaseModel):
     blocks: list[DocumentPageBlockResponse] = Field(default_factory=list)
 
 
+class RuntimeConfigResponse(BaseModel):
+    status: str = "ok"
+    chat_model: str
+    chat_base_url: str
+    api_key_configured: bool
+    mineru_api_key_configured: bool
+
+
 def get_chat_service(request: Request) -> ChatService:
     service = getattr(request.app.state, "chat_service", None)
     if not isinstance(service, ChatService):
@@ -190,8 +199,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         owns_chat_service = chat_service is None
+        config = AppConfig.from_env()
         resolved_session_store = session_store or SQLiteSessionStore.from_env()
-        resolved_document_service = document_service or DocumentService()
+        resolved_document_service = document_service or DocumentService(mineru_api_key=config.mineru_api_key)
         resolved_chat_service = chat_service or build_chat_service_from_env(
             session_store=resolved_session_store,
             document_service=resolved_document_service,
@@ -214,6 +224,16 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/runtime/config", response_model=RuntimeConfigResponse)
+    def runtime_config() -> RuntimeConfigResponse:
+        config = AppConfig.from_env()
+        return RuntimeConfigResponse(
+            chat_model=config.chat_model,
+            chat_base_url=config.chat_base_url,
+            api_key_configured=bool(config.chat_api_key),
+            mineru_api_key_configured=bool(config.mineru_api_key),
+        )
 
     @app.get("/sessions", response_model=list[SessionSummaryResponse])
     def list_sessions(

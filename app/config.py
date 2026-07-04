@@ -26,6 +26,7 @@ class AppConfig:
     stream_include_usage: bool = True
     session_db_path: str = DEFAULT_SESSION_DB_PATH
     tavily_api_key: str = ""
+    mineru_api_key: str = ""
     tracing_enabled: bool = False
     tracing_dir: str = "logs/traces"
     tracing_log_input_messages: bool = True
@@ -60,6 +61,7 @@ class AppConfig:
             stream_include_usage=_env_bool("CHAT_STREAM_INCLUDE_USAGE", default=not is_mimo),
             session_db_path=os.environ.get("SESSION_DB_PATH", DEFAULT_SESSION_DB_PATH),
             tavily_api_key=os.environ.get("TAVILY_API_KEY", ""),
+            mineru_api_key=os.environ.get("MINERU_API_KEY", ""),
             tracing_enabled=_env_bool("TRACING_ENABLED", default=False),
             tracing_dir=os.environ.get("TRACING_DIR", "logs/traces"),
             tracing_log_input_messages=_env_bool("TRACING_LOG_INPUT_MESSAGES", default=True),

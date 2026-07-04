@@ -4,6 +4,7 @@ import {
   deleteDocument,
   deleteSession,
   getDocumentPage,
+  getRuntimeConfig,
   getSession,
   listDocuments,
   listSessions,
@@ -13,6 +14,7 @@ import {
   type CitationResponse,
   type DocumentPageResponse,
   type DocumentResponse,
+  type RuntimeConfigResponse,
   type SessionMessageResponse,
   type SessionSummaryResponse,
 } from "./api/client";
@@ -60,6 +62,7 @@ function App() {
   const [scrollToPage, setScrollToPage] = useState(0);
   const [visiblePage, setVisiblePage] = useState(1);
   const [pageDetail, setPageDetail] = useState<DocumentPageResponse | null>(null);
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigResponse | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -86,6 +89,12 @@ function App() {
   useEffect(() => {
     refreshSessions();
   }, [refreshSessions]);
+
+  useEffect(() => {
+    getRuntimeConfig()
+      .then(setRuntimeConfig)
+      .catch((error: Error) => setStatus(`运行配置加载失败：${error.message}`));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -362,7 +371,7 @@ function App() {
         setDocuments((items) => [...items.filter((item) => item.id !== doc.id), doc].sort((a, b) => a.name.localeCompare(b.name)));
         setActiveDocumentId(doc.id);
         setDocumentPanelCollapsed(false);
-        setStatus(doc.parsed ? "文档已上传" : "PDF 已上传，等待解析后可问答");
+        setStatus(doc.parsed ? "文档已上传并解析" : "PDF 已上传，等待解析后可问答");
       })
       .catch((error: Error) => setStatus(`上传失败：${error.message}`));
   }, []);
@@ -411,6 +420,15 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{chatTitle}</h1>
+            {runtimeConfig ? (
+              <div className="runtime-config" aria-label="运行配置">
+                <span>{runtimeConfig.status === "ok" ? "后端正常" : "后端异常"}</span>
+                <span>{runtimeConfig.chat_model}</span>
+                <span>{runtimeConfig.chat_base_url}</span>
+                <span>{runtimeConfig.api_key_configured ? "Key 已配置" : "Key 未配置"}</span>
+                <span>{runtimeConfig.mineru_api_key_configured ? "MinerU 已配置" : "MinerU 未配置"}</span>
+              </div>
+            ) : null}
           </div>
           <span className="runtime-status">{status}</span>
         </header>

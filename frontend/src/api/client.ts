@@ -85,6 +85,14 @@ export type DocumentPageResponse = {
   }>;
 };
 
+export type RuntimeConfigResponse = {
+  status: string;
+  chat_model: string;
+  chat_base_url: string;
+  api_key_configured: boolean;
+  mineru_api_key_configured: boolean;
+};
+
 export type ChatStreamEvent =
   | { event: "session"; data: { session_id: string } }
   | { event: "status"; data: { message: string } }
@@ -140,6 +148,10 @@ export type SessionSummaryResponse = {
 
 export function listSessions() {
   return requestJson<SessionSummaryResponse[]>("/sessions");
+}
+
+export function getRuntimeConfig() {
+  return requestJson<RuntimeConfigResponse>("/runtime/config");
 }
 
 export function renameSession(sessionId: string, title: string) {

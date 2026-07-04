@@ -1,12 +1,13 @@
 # Fintell
 
-极简前后端分离财报 Chatbox。后端负责 OpenAI-compatible 聊天、流式输出、工具调用、本地财报页读取和 SQLite 会话历史；前端负责单页对话、图表和 PDF 预览。当前版本不包含 RAG、向量索引或在线文档管理，PDF 文本依赖 `data/processed/mineru/` 下已有的 MinerU 解析结果。
+极简前后端分离财报 Chatbox。后端负责 OpenAI-compatible 聊天、流式输出、工具调用、本地财报页读取、MinerU 精准解析上传和 SQLite 会话历史；前端负责单页对话、图表、PDF 预览和文档管理。当前版本不包含向量索引。
 
 ## 功能
 
 - Chat：调用 OpenAI-compatible chat model，支持流式最终回答。
 - Reasoning：兼容 MiMo 的 `reasoning_content` 流式展示和历史回传。
-- Tools：轻量工具抽象层，内置本地财报读取和图表生成，可选接入 Tavily web search。
+- Tools：轻量工具抽象层，内置本地财报读取、全文检索和图表生成，可选接入 Tavily web search。
+- Documents：支持上传 PDF；配置 `MINERU_API_KEY` 时走 MinerU 精准解析，否则用本地 PyMuPDF 文本提取兜底。
 - History：SQLite 持久化会话，刷新页面后可恢复历史。
 - Usage：展示 token/context 占用，前端用 10 格占用条表达上下文压力。
 - Frontend：金融风格单页 chatbox，支持 Markdown、GFM 表格、ECharts 图表和 PDF 预览。
@@ -36,9 +37,12 @@ SESSION_DB_PATH=data/sessions.sqlite3
 
 ```bash
 TAVILY_API_KEY=your-tavily-api-key
+MINERU_API_KEY=your-mineru-api-key
 ```
 
 默认使用 DeepSeek 的 OpenAI-compatible API。切换到其他兼容模型时，只改 `CHAT_API_KEY`、`CHAT_BASE_URL` 和 `CHAT_MODEL`。`CHAT_*` 优先于旧的 `MIMO_*`/`OPENROUTER_*`/`OPENAI_*` 配置；只设置旧 provider key 时仍保留对应兜底行为。MiMo thinking 模式下，历史 assistant 的 `reasoning_content` 会随 SQLite 历史一起回传给后续请求。
+
+上传 PDF 时，如果配置了 `MINERU_API_KEY`，后端会调用 MinerU API 申请上传 URL、上传原 PDF、轮询解析结果、下载 zip，并归一化成项目内部使用的 `content_list_v2.json`。超过 200 页的 PDF 会按 `page_ranges` 自动切成每 200 页一段提交给 MinerU，读取时仍按原始全局页码访问。
 
 ## 启动
 
@@ -75,9 +79,12 @@ npm run dev
 ## API
 
 - `GET /health`：健康检查。
+- `GET /runtime/config`：返回模型和 MinerU key 是否已配置，不返回密钥明文。
 - `GET /sessions`：列出已有会话。
 - `GET /sessions/{session_id}`：恢复单个会话历史。
 - `GET /documents`：列出已解析的本地财报。
+- `POST /documents?filename=report.pdf`：上传 PDF；配置 MinerU 时自动精准解析。
+- `DELETE /documents/{doc_id}`：删除上传的 PDF 和解析产物。
 - `GET /documents/{doc_id}/pdf`：预览原始 PDF。
 - `GET /documents/{doc_id}/pages/{page}`：读取指定 PDF 页文本。
 - `POST /chat`：非流式问答。

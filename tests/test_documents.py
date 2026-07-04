@@ -2,16 +2,20 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from app.documents import DocumentService, DocumentServiceError
+import app.documents.service as document_service
 
 
-def make_pdf_bytes() -> bytes:
+def make_pdf_bytes(text: str = "") -> bytes:
     import pymupdf
 
     pdf = pymupdf.open()
     try:
-        pdf.new_page()
+        page = pdf.new_page()
+        if text:
+            page.insert_text((72, 72), text)
         return pdf.tobytes()
     finally:
         pdf.close()
@@ -108,18 +112,97 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(page.page, 3)
         self.assertEqual(page.text, "第三页")
 
-    def test_lists_uploaded_pdf_as_unparsed_document(self) -> None:
+    def test_upload_parses_pdf_text(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
 
-            doc = service.save_upload("demo.pdf", make_pdf_bytes())
+            doc = service.save_upload("demo.pdf", make_pdf_bytes("hello revenue"))
             docs = service.list_documents()
+            page = service.read_page(doc.id, 1)
 
-        self.assertEqual(doc.parsed, False)
+        self.assertEqual(doc.parsed, True)
         self.assertEqual(docs[0].id, doc.id)
         self.assertEqual(docs[0].name, "demo.pdf")
-        self.assertEqual(docs[0].parsed, False)
+        self.assertEqual(docs[0].parsed, True)
+        self.assertIn("hello revenue", page.text)
+
+    def test_upload_uses_mineru_api_when_configured(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def fake_parse(api_key, pdf_path, content, page_count, artifact_dir):
+                self.assertEqual(api_key, "mineru-key")
+                write_json(
+                    artifact_dir / "manifest.json",
+                    {
+                        "doc_id": "upload-demo",
+                        "file_name": pdf_path.name,
+                        "source_path": str(pdf_path),
+                        "page_count": page_count,
+                        "parser": "mineru_api_precise",
+                    },
+                )
+                write_json(
+                    artifact_dir / "content_list_v2.json",
+                    [[{"type": "paragraph", "content": {"paragraph_content": [{"type": "text", "content": "MinerU 精准解析"}]}}]],
+                )
+
+            service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru", mineru_api_key="mineru-key")
+            with patch("app.documents.service._parse_with_mineru_api", side_effect=fake_parse) as parse:
+                doc = service.save_upload("demo.pdf", make_pdf_bytes("ignored local text"))
+                page = service.read_page(doc.id, 1)
+
+        self.assertTrue(parse.called)
+        self.assertEqual(doc.parsed, True)
+        self.assertIn("MinerU 精准解析", page.text)
+
+    def test_mineru_page_ranges_cap_at_200_pages(self) -> None:
+        self.assertEqual(
+            document_service._mineru_page_ranges(401),
+            [(1, 200), (201, 400), (401, 401)],
+        )
+
+    def test_mineru_upload_url_accepts_api_string_shape(self) -> None:
+        self.assertEqual(
+            document_service._mineru_upload_url("https://example.com/upload"),
+            "https://example.com/upload",
+        )
+        self.assertEqual(
+            document_service._mineru_upload_url({"url": "https://example.com/upload"}),
+            "https://example.com/upload",
+        )
+
+    def test_normalize_content_list_prefers_mineru_v2_output(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_json(root / "abc_content_list.json", [{"text": "旧版", "page_idx": 0}])
+            write_json(
+                root / "abc_content_list_v2.json",
+                [[{"type": "paragraph", "content": {"paragraph_content": [{"type": "text", "content": "新版"}]}}]],
+            )
+
+            document_service._normalize_content_list(root)
+            payload = json.loads((root / "content_list_v2.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload[0][0]["content"]["paragraph_content"][0]["content"], "新版")
+
+    def test_normalize_content_list_groups_legacy_output_by_page(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_json(
+                root / "abc_content_list.json",
+                [
+                    {"type": "text", "text": "第一页", "page_idx": 0},
+                    {"type": "text", "text": "第二页", "page_idx": 1},
+                ],
+            )
+
+            document_service._normalize_content_list(root)
+            payload = json.loads((root / "content_list_v2.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload[0][0]["text"], "第一页")
+        self.assertEqual(payload[1][0]["text"], "第二页")
 
     def test_deletes_uploaded_document(self) -> None:
         with TemporaryDirectory() as directory:

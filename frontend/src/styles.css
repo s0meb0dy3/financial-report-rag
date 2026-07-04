@@ -343,6 +343,27 @@ button {
   line-height: 1.2;
 }
 
+.runtime-config {
+  display: flex;
+  max-width: min(760px, 60vw);
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.runtime-config span {
+  max-width: 260px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--muted);
+  background: rgba(255, 253, 247, 0.68);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .runtime-status {
   max-width: 340px;
   overflow: hidden;

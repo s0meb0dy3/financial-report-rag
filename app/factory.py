@@ -23,7 +23,7 @@ def build_chat_service_from_env(
     config = AppConfig.from_env()
     api_key = config.require_api_key()
     client = OpenAI(base_url=config.chat_base_url, api_key=api_key)
-    resolved_document_service = document_service or DocumentService()
+    resolved_document_service = document_service or DocumentService(mineru_api_key=config.mineru_api_key)
     tools = [
         ListReportsTool(resolved_document_service),
         ReadTableOfContentsTool(resolved_document_service),

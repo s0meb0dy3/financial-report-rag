@@ -1,15 +1,24 @@
 import json
+import http.client
 import re
 import shutil
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
 from dataclasses import dataclass
 from functools import lru_cache
 from html import unescape
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 
 DEFAULT_RAW_DIR = Path("data/raw")
 DEFAULT_MINERU_DIR = Path("data/processed/mineru")
+MINERU_API_BASE_URL = "https://mineru.net/api/v4"
+MINERU_MAX_PAGES_PER_FILE = 200
 
 
 class DocumentServiceError(ValueError):
@@ -64,9 +73,11 @@ class DocumentService:
         *,
         raw_dir: str | Path = DEFAULT_RAW_DIR,
         mineru_dir: str | Path = DEFAULT_MINERU_DIR,
+        mineru_api_key: str = "",
     ):
         self.raw_dir = Path(raw_dir)
         self.mineru_dir = Path(mineru_dir)
+        self.mineru_api_key = mineru_api_key
 
     def get_toc(self, doc_id: str) -> dict[str, Any]:
         """Return the table of contents (bookmarks) from a PDF.
@@ -163,14 +174,21 @@ class DocumentService:
                 target = upload_dir / f"{stem}-{counter}{suffix}"
                 counter += 1
         target.write_bytes(content)
-        return DocumentInfo(
-            id=_uploaded_doc_id(target),
-            name=target.name,
-            page_count=page_count,
-            pdf_path=target,
-            artifact_dir=self.mineru_dir / _uploaded_doc_id(target),
-            parsed=False,
-        )
+        doc_id = _uploaded_doc_id(target)
+        artifact_dir = self.mineru_dir / doc_id
+        try:
+            if self.mineru_api_key:
+                _parse_with_mineru_api(self.mineru_api_key, target, content, page_count, artifact_dir)
+            else:
+                _write_local_parse(artifact_dir, doc_id, target, _uploaded_pdf_pages(content))
+        except DocumentServiceError:
+            if artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+            if target.exists():
+                target.unlink()
+            raise
+        _read_json.cache_clear()
+        return self.get_document(doc_id)
 
     def delete_document(self, doc_id: str) -> bool:
         doc = self.get_document(doc_id)
@@ -305,6 +323,273 @@ def _uploaded_pdf_page_count(content: bytes) -> int:
     return page_count
 
 
+def _uploaded_pdf_pages(content: bytes) -> list[list[dict[str, Any]]]:
+    try:
+        import pymupdf
+
+        pdf = pymupdf.open(stream=content, filetype="pdf")
+        try:
+            page_count = int(pdf.page_count)
+            pages = [_page_to_block_list(pdf[index].get_text("text")) for index in range(page_count)]
+        finally:
+            pdf.close()
+    except Exception as exc:
+        raise DocumentServiceError("Uploaded PDF is invalid") from exc
+    if page_count <= 0:
+        raise DocumentServiceError("Uploaded PDF has no pages")
+    return pages
+
+
+def _write_local_parse(artifact_dir: Path, doc_id: str, pdf_path: Path, pages: list[list[dict[str, Any]]]) -> None:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        artifact_dir / "manifest.json",
+        {
+            "doc_id": doc_id,
+            "file_name": pdf_path.name,
+            "source_path": str(pdf_path),
+            "page_count": len(pages),
+            "parser": "pymupdf",
+        },
+    )
+    _write_json(artifact_dir / "content_list_v2.json", pages)
+
+
+def _parse_with_mineru_api(
+    api_key: str,
+    pdf_path: Path,
+    content: bytes,
+    page_count: int,
+    artifact_dir: Path,
+) -> None:
+    doc_id = _uploaded_doc_id(pdf_path)
+    ranges = _mineru_page_ranges(page_count)
+    files = [
+        {
+            "name": f"{pdf_path.stem}-part-{index:03d}{pdf_path.suffix}",
+            "is_ocr": True,
+            "data_id": f"{doc_id}-part-{index:03d}",
+            "page_ranges": f"{start}-{end}",
+        }
+        for index, (start, end) in enumerate(ranges, start=1)
+    ]
+    payload = {
+        "enable_formula": True,
+        "enable_table": True,
+        "language": "ch",
+        "files": files,
+    }
+    applied = _mineru_json("POST", f"{MINERU_API_BASE_URL}/file-urls/batch", api_key, payload)
+    data = applied.get("data") if isinstance(applied, dict) else None
+    if not isinstance(data, dict):
+        raise DocumentServiceError("MinerU did not return upload data")
+    batch_id = str(data.get("batch_id") or "")
+    upload_urls = data.get("file_urls")
+    if not batch_id or not isinstance(upload_urls, list):
+        raise DocumentServiceError("MinerU did not return upload URLs")
+    for item in upload_urls:
+        upload_url = _mineru_upload_url(item)
+        if not upload_url:
+            raise DocumentServiceError("MinerU returned an invalid upload URL")
+        _mineru_put_bytes(upload_url, content)
+
+    results = _wait_for_mineru_results(api_key, batch_id, len(files))
+    if len(ranges) == 1:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        _download_mineru_zip(results[0], artifact_dir)
+        _normalize_content_list(artifact_dir)
+        _write_json(
+            artifact_dir / "manifest.json",
+            {
+                "doc_id": doc_id,
+                "file_name": pdf_path.name,
+                "source_path": str(pdf_path),
+                "page_count": page_count,
+                "parser": "mineru_api_precise",
+                "batch_id": batch_id,
+            },
+        )
+        return
+
+    parts = []
+    for index, ((start, end), result) in enumerate(zip(ranges, results, strict=True), start=1):
+        part_dir = artifact_dir / "parts" / f"part-{index:03d}"
+        part_dir.mkdir(parents=True, exist_ok=True)
+        _download_mineru_zip(result, part_dir)
+        _normalize_content_list(part_dir)
+        parts.append(
+            {
+                "part_index": index,
+                "page_start": start,
+                "page_end": end,
+                "artifact_dir": str(part_dir),
+            }
+        )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        artifact_dir / "manifest.json",
+        {
+            "doc_id": doc_id,
+            "file_name": pdf_path.name,
+            "source_path": str(pdf_path),
+            "page_count": page_count,
+            "split": True,
+            "parser": "mineru_api_precise",
+            "batch_id": batch_id,
+            "parts": parts,
+        },
+    )
+
+
+def _mineru_page_ranges(page_count: int) -> list[tuple[int, int]]:
+    return [
+        (start, min(start + MINERU_MAX_PAGES_PER_FILE - 1, page_count))
+        for start in range(1, page_count + 1, MINERU_MAX_PAGES_PER_FILE)
+    ]
+
+
+def _mineru_upload_url(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        for key in ("url", "file_url", "upload_url"):
+            value = item.get(key)
+            if isinstance(value, str):
+                return value
+    return ""
+
+
+def _wait_for_mineru_results(api_key: str, batch_id: str, expected_count: int) -> list[dict[str, Any]]:
+    deadline = time.monotonic() + 900
+    while time.monotonic() < deadline:
+        payload = _mineru_json("GET", f"{MINERU_API_BASE_URL}/extract-results/batch/{batch_id}", api_key)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        results = data.get("extract_result") if isinstance(data, dict) else None
+        if not isinstance(results, list):
+            raise DocumentServiceError("MinerU returned invalid extraction results")
+        failed = [item for item in results if isinstance(item, dict) and str(item.get("state")) == "failed"]
+        if failed:
+            message = str(failed[0].get("err_msg") or "MinerU parse failed")
+            raise DocumentServiceError(message)
+        done = [item for item in results if isinstance(item, dict) and str(item.get("state")) == "done"]
+        if len(done) >= expected_count:
+            return sorted(done, key=lambda item: str(item.get("data_id") or item.get("file_id") or ""))
+        time.sleep(3)
+    raise DocumentServiceError("MinerU parse timed out")
+
+
+def _download_mineru_zip(result: dict[str, Any], target_dir: Path) -> None:
+    zip_url = str(result.get("full_zip_url") or "")
+    if not zip_url:
+        raise DocumentServiceError("MinerU result did not include full_zip_url")
+    archive = _download_bytes(zip_url)
+    _extract_zip(archive, target_dir)
+
+
+def _normalize_content_list(target_dir: Path) -> None:
+    target = target_dir / "content_list_v2.json"
+    if target.exists():
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        _write_json(target, _normalize_content_payload(payload))
+        return
+    candidates = sorted(target_dir.rglob("*content_list*.json"))
+    if not candidates:
+        raise DocumentServiceError("MinerU output is missing content_list JSON")
+    candidate = next((path for path in candidates if "content_list_v2" in path.name), candidates[0])
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    _write_json(target, _normalize_content_payload(payload))
+
+
+def _normalize_content_payload(payload: Any) -> Any:
+    if not isinstance(payload, list) or not payload:
+        return payload
+    if all(isinstance(item, list) for item in payload):
+        return payload
+    if not all(isinstance(item, dict) for item in payload):
+        return payload
+
+    page_indexes = [_page_index(item) for item in payload]
+    pages: list[list[dict[str, Any]]] = [[] for _ in range(max(page_indexes) + 1)]
+    for item, page_index in zip(payload, page_indexes, strict=True):
+        pages[page_index].append(item)
+    return pages
+
+
+def _page_index(item: dict[str, Any]) -> int:
+    try:
+        return max(int(item.get("page_idx") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mineru_json(method: str, url: str, api_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            parsed = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise DocumentServiceError(f"MinerU request failed: {exc}") from exc
+    if int(parsed.get("code", -1)) != 0:
+        raise DocumentServiceError(str(parsed.get("msg") or "MinerU request failed"))
+    return parsed
+
+
+def _mineru_put_bytes(url: str, content: bytes) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(parsed.netloc, timeout=120)
+    try:
+        connection.request("PUT", path, body=content, headers={"Content-Length": str(len(content))})
+        response = connection.getresponse()
+        response.read()
+        if response.status >= 400:
+            raise DocumentServiceError(f"MinerU upload failed: HTTP {response.status}")
+    except (OSError, http.client.HTTPException) as exc:
+        raise DocumentServiceError(f"MinerU upload failed: {exc}") from exc
+    finally:
+        connection.close()
+
+
+def _download_bytes(url: str) -> bytes:
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            return response.read()
+    except urllib.error.URLError as exc:
+        raise DocumentServiceError(f"MinerU download failed: {exc}") from exc
+
+
+def _extract_zip(archive: bytes, target_dir: Path) -> None:
+    root = target_dir.resolve()
+    with zipfile.ZipFile(BytesIO(archive)) as zip_file:
+        for member in zip_file.infolist():
+            destination = (target_dir / member.filename).resolve()
+            if not _is_relative_to(destination, root):
+                raise DocumentServiceError("MinerU output zip contains unsafe paths")
+            zip_file.extract(member, target_dir)
+
+
+def _page_to_block_list(text: str) -> list[dict[str, Any]]:
+    text = text.strip()
+    if not text:
+        return []
+    return [
+        {
+            "type": "paragraph",
+            "content": {"paragraph_content": [{"type": "text", "content": text}]},
+        }
+    ]
+
+
 def _pdf_page_count(pdf_path: Path) -> int:
     try:
         import pymupdf
@@ -377,10 +662,17 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _write_json(path: Path, payload: Any) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
 def _normalize_block(item: dict[str, Any]) -> dict[str, Any]:
+    text = _extract_text(item.get("content")).strip()
+    if not text and isinstance(item.get("text"), str):
+        text = item["text"].strip()
     return {
         "type": str(item.get("type") or "block"),
-        "text": _extract_text(item.get("content")).strip(),
+        "text": text,
         "bbox": item.get("bbox") if isinstance(item.get("bbox"), list) else None,
     }
 
