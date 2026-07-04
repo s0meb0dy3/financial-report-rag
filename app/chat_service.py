@@ -495,6 +495,7 @@ class ChatService:
             citations=citations or [],
             tool_results=tool_results or [],
             usage=usage.to_dict() if usage is not None else None,
+            create_session=False,
         )
         return ChatResult(
             session_id=session_id,

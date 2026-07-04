@@ -201,8 +201,13 @@ class SQLiteSessionStore:
         tool_results: list[dict[str, Any]] | None = None,
         reasoning_content: str = "",
         usage: dict[str, Any] | None = None,
+        create_session: bool = True,
     ) -> SessionTurn:
-        session = self.ensure_session(session_id, title=user_content[:18] or "新对话")
+        session = self.get_session(session_id)
+        if session is None:
+            if not create_session:
+                raise ValueError(f"Session not found: {session_id}")
+            session = self.ensure_session(session_id, title=user_content[:18] or "新对话")
         if session.title == "新对话" and user_content.strip():
             self.update_session(session_id, title=user_content[:18])
 

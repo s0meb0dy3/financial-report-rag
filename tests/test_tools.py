@@ -18,7 +18,7 @@ def build_search_document_service(root: Path) -> DocumentService:
     pdf.parent.mkdir(parents=True, exist_ok=True)
     pdf.write_bytes(b"%PDF-1.4")
     for doc_id, pages in {
-        "doc-a": ["第一页营收 100 亿元", "第二页净利润 20 亿元"],
+        "doc-a": ["第一页营收 100 亿元，净利润增长", "第二页净利润 20 亿元"],
         "doc-b": ["第一页营收 50 亿元"],
     }.items():
         artifact = root / "mineru" / doc_id
@@ -150,11 +150,13 @@ class ToolRegistryTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             service = build_search_document_service(Path(directory))
 
-            result = SearchReportTextTool(service).run({"doc_id": "doc-a", "query": "净利润"})
+            result = SearchReportTextTool(service).run({"doc_id": "doc-a", "query": "20 亿元"})
 
         self.assertEqual(result["results"][0]["doc_id"], "doc-a")
         self.assertEqual(result["results"][0]["page"], 2)
-        self.assertIn("净利润", result["results"][0]["snippet"])
+        self.assertIn("20 亿元", result["results"][0]["snippet"])
+        self.assertGreater(result["results"][0]["score"], 0)
+        self.assertEqual(result["results"][0]["matched_terms"], ["20 亿元"])
         self.assertEqual(result["citations"][0]["page"], 2)
 
     def test_search_report_text_can_search_all_docs_and_cap_results(self) -> None:
@@ -173,6 +175,16 @@ class ToolRegistryTests(unittest.TestCase):
             result = SearchReportTextTool(service).run({"query": "营收", "max_results": 5})
 
         self.assertEqual([item["doc_id"] for item in result["results"]], ["doc-a", "doc-b"])
+
+    def test_search_report_text_ranks_multi_term_matches(self) -> None:
+        with TemporaryDirectory() as directory:
+            service = build_search_document_service(Path(directory))
+
+            result = SearchReportTextTool(service).run({"query": "营收 净利润", "max_results": 5})
+
+        self.assertEqual(result["results"][0]["doc_id"], "doc-a")
+        self.assertEqual(result["results"][0]["page"], 1)
+        self.assertIn("营收", result["results"][0]["matched_terms"])
 
     def test_search_report_text_rejects_blank_query(self) -> None:
         with TemporaryDirectory() as directory:

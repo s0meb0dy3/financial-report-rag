@@ -12,6 +12,17 @@ from app.documents import DocumentService
 from app.session import SQLiteSessionStore
 
 
+def make_pdf_bytes() -> bytes:
+    import pymupdf
+
+    pdf = pymupdf.open()
+    try:
+        pdf.new_page()
+        return pdf.tobytes()
+    finally:
+        pdf.close()
+
+
 def make_response(content: str) -> MagicMock:
     response = MagicMock()
     response.choices = [MagicMock(message=MagicMock(content=content))]
@@ -181,6 +192,68 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(page.json()["text"], "第一页内容")
         self.assertEqual(pdf.status_code, 200)
         self.assertIn("application/pdf", pdf.headers["content-type"])
+
+    def test_session_rename_and_delete_endpoints(self) -> None:
+        with TemporaryDirectory() as directory:
+            store = SQLiteSessionStore(Path(directory) / "sessions.sqlite3")
+            store.record_turn("session-1", user_content="问题", assistant_content="回答", citations=[])
+            with TestClient(create_app(chat_service=build_test_service(store), session_store=store)) as client:
+                renamed = client.patch("/sessions/session-1", json={"title": "新标题"})
+                deleted = client.delete("/sessions/session-1")
+                missing = client.get("/sessions/session-1")
+
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.json()["title"], "新标题")
+        self.assertEqual(deleted.status_code, 204)
+        self.assertEqual(missing.status_code, 404)
+
+    def test_document_upload_and_delete_endpoints(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            doc_service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
+            with TestClient(
+                create_app(
+                    chat_service=build_test_service(store),
+                    session_store=store,
+                    document_service=doc_service,
+                )
+            ) as client:
+                uploaded = client.post(
+                    "/documents?filename=upload.pdf",
+                    content=make_pdf_bytes(),
+                    headers={"Content-Type": "application/pdf"},
+                )
+                doc_id = uploaded.json()["id"]
+                listed = client.get("/documents")
+                deleted = client.delete(f"/documents/{doc_id}")
+
+        self.assertEqual(uploaded.status_code, 200)
+        self.assertEqual(uploaded.json()["parsed"], False)
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()[0]["name"], "upload.pdf")
+        self.assertEqual(deleted.status_code, 204)
+
+    def test_document_upload_rejects_invalid_pdf(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            doc_service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
+            with TestClient(
+                create_app(
+                    chat_service=build_test_service(store),
+                    session_store=store,
+                    document_service=doc_service,
+                )
+            ) as client:
+                response = client.post(
+                    "/documents?filename=bad.pdf",
+                    content=b"not a pdf",
+                    headers={"Content-Type": "application/pdf"},
+                )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("invalid", response.json()["detail"])
 
 
 if __name__ == "__main__":

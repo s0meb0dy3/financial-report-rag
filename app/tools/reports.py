@@ -1,4 +1,5 @@
 from typing import Any
+import re
 
 from app.documents import DocumentService, DocumentServiceError
 
@@ -211,33 +212,37 @@ class SearchReportTextTool:
         except DocumentServiceError as exc:
             raise ValueError(str(exc)) from exc
         query_lower = query.lower()
+        terms = _query_terms(query)
 
         results: list[dict[str, Any]] = []
-        citations: list[dict[str, Any]] = []
         for doc in docs:
             for page in range(1, doc.page_count + 1):
                 try:
                     parsed_page = self.document_service.read_page(doc.id, page)
                 except DocumentServiceError:
                     continue
-                index = parsed_page.text.lower().find(query_lower)
-                if index < 0:
+                match = _match_page(parsed_page.text, query_lower, terms)
+                if match is None:
                     continue
-                item = {
+                results.append({
                     "doc_id": parsed_page.doc_id,
                     "doc_name": parsed_page.doc_name,
                     "page": parsed_page.page,
-                    "snippet": _snippet(parsed_page.text, index, len(query)),
-                }
-                results.append(item)
-                citations.append({
-                    "doc_id": parsed_page.doc_id,
-                    "doc_name": parsed_page.doc_name,
-                    "page": parsed_page.page,
+                    "snippet": _snippet(parsed_page.text, match["index"], match["length"]),
+                    "score": match["score"],
+                    "matched_terms": match["terms"],
                 })
-                if len(results) >= max_results:
-                    return {"query": query, "results": results, "citations": citations}
-        return {"query": query, "results": results, "citations": citations}
+        results.sort(key=lambda item: (-int(item["score"]), str(item["doc_name"]), int(item["page"])))
+        results = results[:max_results]
+        citations = [
+            {
+                "doc_id": item["doc_id"],
+                "doc_name": item["doc_name"],
+                "page": item["page"],
+            }
+            for item in results
+        ]
+        return {"query": query, "terms": terms, "results": results, "citations": citations}
 
 
 def _trim_blocks(blocks: list[dict[str, Any]], max_chars: int) -> list[dict[str, Any]]:
@@ -264,6 +269,41 @@ def _as_int(value: Any, *, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _query_terms(query: str) -> list[str]:
+    terms = [item.lower() for item in re.findall(r"[\w一-鿿]+", query) if item.strip()]
+    if query.lower() not in terms:
+        terms.insert(0, query.lower())
+    return list(dict.fromkeys(term for term in terms if term))
+
+
+def _match_page(text: str, query_lower: str, terms: list[str]) -> dict[str, Any] | None:
+    text_lower = text.lower()
+    exact_index = text_lower.find(query_lower)
+    if exact_index >= 0:
+        return {
+            "index": exact_index,
+            "length": len(query_lower),
+            "terms": [query_lower],
+            "score": 1000 + text_lower.count(query_lower) * 10,
+        }
+
+    matched: list[str] = []
+    first_index: int | None = None
+    score = 0
+    for term in terms:
+        if term == query_lower:
+            continue
+        index = text_lower.find(term)
+        if index < 0:
+            continue
+        matched.append(term)
+        first_index = index if first_index is None else min(first_index, index)
+        score += 100 + min(20, text_lower.count(term) * 2) + min(20, len(term))
+    if not matched or first_index is None:
+        return None
+    return {"index": first_index, "length": len(matched[0]), "terms": matched, "score": score}
 
 
 def _snippet(text: str, index: int, query_length: int, *, radius: int = 80) -> str:

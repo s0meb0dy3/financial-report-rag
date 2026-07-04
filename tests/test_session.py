@@ -66,6 +66,21 @@ class SessionStoreTests(unittest.TestCase):
         self.assertIsNone(missing)
         self.assertEqual(turns, [])
 
+    def test_record_turn_can_require_existing_session(self) -> None:
+        with TemporaryDirectory() as directory:
+            store = SQLiteSessionStore(Path(directory) / "sessions.sqlite3")
+
+            with self.assertRaises(ValueError):
+                store.record_turn(
+                    "deleted-session",
+                    user_content="问题",
+                    assistant_content="回答",
+                    citations=[],
+                    create_session=False,
+                )
+
+            self.assertIsNone(store.get_session("deleted-session"))
+
 
 if __name__ == "__main__":
     unittest.main()

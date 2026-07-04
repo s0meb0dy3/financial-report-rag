@@ -3,7 +3,18 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.documents import DocumentService
+from app.documents import DocumentService, DocumentServiceError
+
+
+def make_pdf_bytes() -> bytes:
+    import pymupdf
+
+    pdf = pymupdf.open()
+    try:
+        pdf.new_page()
+        return pdf.tobytes()
+    finally:
+        pdf.close()
 
 
 def write_json(path: Path, payload) -> None:
@@ -96,6 +107,55 @@ class DocumentServiceTests(unittest.TestCase):
 
         self.assertEqual(page.page, 3)
         self.assertEqual(page.text, "第三页")
+
+    def test_lists_uploaded_pdf_as_unparsed_document(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
+
+            doc = service.save_upload("demo.pdf", make_pdf_bytes())
+            docs = service.list_documents()
+
+        self.assertEqual(doc.parsed, False)
+        self.assertEqual(docs[0].id, doc.id)
+        self.assertEqual(docs[0].name, "demo.pdf")
+        self.assertEqual(docs[0].parsed, False)
+
+    def test_deletes_uploaded_document(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
+            doc = service.save_upload("demo.pdf", make_pdf_bytes())
+
+            removed = service.delete_document(doc.id)
+            docs = service.list_documents()
+
+        self.assertTrue(removed)
+        self.assertEqual(docs, [])
+
+    def test_rejects_invalid_uploaded_pdf(self) -> None:
+        with TemporaryDirectory() as directory:
+            service = DocumentService(raw_dir=Path(directory) / "raw", mineru_dir=Path(directory) / "mineru")
+
+            with self.assertRaises(DocumentServiceError):
+                service.save_upload("demo.pdf", b"not a pdf")
+
+    def test_does_not_delete_parsed_builtin_document(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "raw" / "report.pdf"
+            pdf.parent.mkdir(parents=True)
+            pdf.write_bytes(make_pdf_bytes())
+            artifact = root / "mineru" / "doc-a"
+            write_json(artifact / "manifest.json", {"doc_id": "doc-a", "file_name": "report.pdf", "source_path": str(pdf)})
+            write_json(artifact / "content_list_v2.json", [[{"type": "paragraph", "content": {"paragraph_content": [{"type": "text", "content": "正文"}]}}]])
+            service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
+
+            removed = service.delete_document("doc-a")
+            pdf_exists = pdf.exists()
+
+        self.assertFalse(removed)
+        self.assertTrue(pdf_exists)
 
 
 if __name__ == "__main__":

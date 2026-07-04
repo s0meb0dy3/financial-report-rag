@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { SessionSummaryResponse } from "../api/client";
 import { Icon } from "./Icon";
@@ -8,6 +8,8 @@ export function Sidebar({
   activeSessionId,
   onNewChat,
   onSelectSession,
+  onRenameSession,
+  onDeleteSession,
   collapsed,
   onToggle,
 }: {
@@ -15,9 +17,13 @@ export function Sidebar({
   activeSessionId: string;
   onNewChat: () => void;
   onSelectSession: (id: string) => void;
+  onRenameSession: (id: string, title: string) => void;
+  onDeleteSession: (id: string) => void;
   collapsed: boolean;
   onToggle: () => void;
 }) {
+  const [editingId, setEditingId] = useState("");
+  const [draftTitle, setDraftTitle] = useState("");
   const groups = useMemo(() => {
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
@@ -60,16 +66,66 @@ export function Sidebar({
         {groups.map((group) => (
           <div className="history-group" key={group.label}>
             <p>{group.label}</p>
-            {group.items.map((session) => (
-              <button
-                className={`history-item${session.id === activeSessionId ? " active" : ""}`}
-                type="button"
-                key={session.id}
-                onClick={() => onSelectSession(session.id)}
-              >
-                <span>{session.title}</span>
-              </button>
-            ))}
+            {group.items.map((session) => {
+              const editing = editingId === session.id;
+              return (
+                <div
+                  className={`history-item${session.id === activeSessionId ? " active" : ""}${editing ? " editing" : ""}`}
+                  key={session.id}
+                >
+                  {editing ? (
+                    <form
+                      className="history-rename"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        const title = draftTitle.trim();
+                        if (title) onRenameSession(session.id, title);
+                        setEditingId("");
+                      }}
+                    >
+                      <input
+                        value={draftTitle}
+                        autoFocus
+                        onBlur={() => setEditingId("")}
+                        onChange={(event) => setDraftTitle(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") setEditingId("");
+                        }}
+                      />
+                    </form>
+                  ) : (
+                    <>
+                      <button
+                        className="history-title"
+                        type="button"
+                        onClick={() => onSelectSession(session.id)}
+                      >
+                        <span>{session.title}</span>
+                      </button>
+                      <div className="history-actions">
+                        <button
+                          type="button"
+                          aria-label="重命名会话"
+                          onClick={() => {
+                            setEditingId(session.id);
+                            setDraftTitle(session.title);
+                          }}
+                        >
+                          <Icon name="pencil" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="删除会话"
+                          onClick={() => onDeleteSession(session.id)}
+                        >
+                          <Icon name="trash" />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
         ))}
         {sessions.length === 0 && !collapsed && (

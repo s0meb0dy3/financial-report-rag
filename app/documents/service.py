@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from functools import lru_cache
 from html import unescape
@@ -118,6 +119,20 @@ class DocumentService:
                     docs.append(self._document_from_manifest(manifest_path))
                 except DocumentServiceError:
                     continue
+        parsed_pdf_paths = {doc.pdf_path.resolve() for doc in docs if doc.pdf_path.exists()}
+        for pdf_path in self._uploaded_pdf_paths():
+            if pdf_path.resolve() in parsed_pdf_paths:
+                continue
+            docs.append(
+                DocumentInfo(
+                    id=_uploaded_doc_id(pdf_path),
+                    name=pdf_path.name,
+                    page_count=_pdf_page_count(pdf_path),
+                    pdf_path=pdf_path,
+                    artifact_dir=self.mineru_dir / _uploaded_doc_id(pdf_path),
+                    parsed=False,
+                )
+            )
         return sorted(docs, key=lambda item: item.name)
 
     def get_document(self, doc_id: str) -> DocumentInfo:
@@ -132,8 +147,51 @@ class DocumentService:
             raise DocumentServiceError(f"PDF file is missing for document: {doc_id}")
         return doc.pdf_path
 
+    def save_upload(self, file_name: str, content: bytes) -> DocumentInfo:
+        safe_name = _safe_pdf_name(file_name)
+        if not content:
+            raise DocumentServiceError("Uploaded PDF is empty")
+        page_count = _uploaded_pdf_page_count(content)
+        upload_dir = self.raw_dir / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        target = upload_dir / safe_name
+        if target.exists():
+            stem = target.stem
+            suffix = target.suffix
+            counter = 2
+            while target.exists():
+                target = upload_dir / f"{stem}-{counter}{suffix}"
+                counter += 1
+        target.write_bytes(content)
+        return DocumentInfo(
+            id=_uploaded_doc_id(target),
+            name=target.name,
+            page_count=page_count,
+            pdf_path=target,
+            artifact_dir=self.mineru_dir / _uploaded_doc_id(target),
+            parsed=False,
+        )
+
+    def delete_document(self, doc_id: str) -> bool:
+        doc = self.get_document(doc_id)
+        if not doc.id.startswith("upload-"):
+            return False
+        removed = False
+        if _is_relative_to(doc.artifact_dir.resolve(), self.mineru_dir.resolve()) and doc.artifact_dir.exists():
+            shutil.rmtree(doc.artifact_dir)
+            removed = True
+        allowed_pdf_roots = [self.raw_dir.resolve(), (self.raw_dir / "uploads").resolve()]
+        pdf_path = doc.pdf_path.resolve()
+        if doc.pdf_path.exists() and any(_is_relative_to(pdf_path, root) for root in allowed_pdf_roots):
+            doc.pdf_path.unlink()
+            removed = True
+        _read_json.cache_clear()
+        return removed
+
     def read_page(self, doc_id: str, page: int) -> DocumentPage:
         doc = self.get_document(doc_id)
+        if not doc.parsed:
+            raise DocumentServiceError(f"Document is not parsed yet: {doc_id}")
         if page < 1 or page > doc.page_count:
             raise DocumentServiceError(f"page must be between 1 and {doc.page_count}")
 
@@ -210,6 +268,62 @@ class DocumentService:
                         part_dir = artifact_dir / "parts" / f"part-{int(part.get('part_index', 1)):03d}"
                     return _read_page_from_content_list(part_dir / "content_list_v2.json", page - start + 1)
         return _read_page_from_content_list(artifact_dir / "content_list_v2.json", page)
+
+    def _uploaded_pdf_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        for root in (self.raw_dir, self.raw_dir / "uploads"):
+            if root.exists():
+                paths.extend(sorted(root.glob("*.pdf")))
+        return paths
+
+
+def _safe_pdf_name(file_name: str) -> str:
+    name = Path(file_name).name.strip() or "document.pdf"
+    if not name.lower().endswith(".pdf"):
+        raise DocumentServiceError("Only PDF files are supported")
+    safe = re.sub(r"[^\w\-.一-鿿]+", "-", name).strip(".-")
+    return safe if safe.lower().endswith(".pdf") else f"{safe or 'document'}.pdf"
+
+
+def _uploaded_doc_id(pdf_path: Path) -> str:
+    return f"upload-{re.sub(r'[^a-zA-Z0-9_-]+', '-', pdf_path.stem).strip('-').lower() or 'document'}"
+
+
+def _uploaded_pdf_page_count(content: bytes) -> int:
+    try:
+        import pymupdf
+
+        pdf = pymupdf.open(stream=content, filetype="pdf")
+        try:
+            page_count = int(pdf.page_count)
+        finally:
+            pdf.close()
+    except Exception as exc:
+        raise DocumentServiceError("Uploaded PDF is invalid") from exc
+    if page_count <= 0:
+        raise DocumentServiceError("Uploaded PDF has no pages")
+    return page_count
+
+
+def _pdf_page_count(pdf_path: Path) -> int:
+    try:
+        import pymupdf
+
+        pdf = pymupdf.open(str(pdf_path))
+        try:
+            return int(pdf.page_count)
+        finally:
+            pdf.close()
+    except Exception:
+        return 0
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def _build_page_label_map(pdf: Any) -> dict[int, str]:

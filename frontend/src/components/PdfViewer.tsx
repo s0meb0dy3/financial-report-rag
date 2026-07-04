@@ -247,6 +247,9 @@ export function DocumentPanel({
   onToggle,
   onOpenPage,
   onVisiblePageChange,
+  onUploadDocument,
+  onDeleteDocument,
+  onAskCurrentPage,
   onResize,
   onResizeStart,
   onResizeEnd,
@@ -259,11 +262,21 @@ export function DocumentPanel({
   onToggle: () => void;
   onOpenPage: (docId: string, page: number) => void;
   onVisiblePageChange: (page: number) => void;
+  onUploadDocument: (file: File) => void;
+  onDeleteDocument: (docId: string) => void;
+  onAskCurrentPage: () => void;
   onResize: (width: number) => void;
   onResizeStart: () => void;
   onResizeEnd: () => void;
 }) {
   const handleRef = useRef<HTMLDivElement | null>(null);
+  const uploadRef = useRef<HTMLInputElement | null>(null);
+  const activeDoc = documents.find((doc) => doc.id === activeDocId) ?? documents[0] ?? null;
+  const [pageInput, setPageInput] = useState("1");
+
+  useEffect(() => {
+    setPageInput(String(pageDetail?.page ?? 1));
+  }, [pageDetail?.page, activeDoc?.id]);
 
   useEffect(() => {
     const handle = handleRef.current;
@@ -303,7 +316,13 @@ export function DocumentPanel({
       document.removeEventListener("mouseup", onMouseUp);
     };
   }, [collapsed, onResize, onResizeStart, onResizeEnd]);
-  const activeDoc = documents.find((doc) => doc.id === activeDocId) ?? documents[0] ?? null;
+
+  const jumpToPage = () => {
+    if (!activeDoc) return;
+    const page = Math.min(activeDoc.page_count || 1, Math.max(1, Number.parseInt(pageInput, 10) || 1));
+    onOpenPage(activeDoc.id, page);
+    setPageInput(String(page));
+  };
 
   if (collapsed) {
     return (
@@ -338,11 +357,45 @@ export function DocumentPanel({
             {documents.length === 0 ? <option value="">暂无报告</option> : null}
             {documents.map((doc) => (
               <option value={doc.id} key={doc.id}>
-                {doc.name}
+                {doc.name}{doc.parsed ? "" : "（未解析）"}
               </option>
             ))}
           </select>
         </label>
+        <div className="document-action-row">
+          <input
+            ref={uploadRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) onUploadDocument(file);
+              event.currentTarget.value = "";
+            }}
+          />
+          <button type="button" onClick={() => uploadRef.current?.click()}>
+            <Icon name="upload" /> 上传
+          </button>
+          <button type="button" disabled={!activeDoc} onClick={() => activeDoc && onDeleteDocument(activeDoc.id)}>
+            <Icon name="trash" /> 删除
+          </button>
+        </div>
+        <div className="page-jump-row">
+          <label>
+            <span>页码</span>
+            <input
+              value={pageInput}
+              inputMode="numeric"
+              onChange={(event) => setPageInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") jumpToPage();
+              }}
+            />
+          </label>
+          <button type="button" disabled={!activeDoc} onClick={jumpToPage}>跳转</button>
+          <button type="button" disabled={!activeDoc?.parsed} onClick={onAskCurrentPage}>问当前页</button>
+        </div>
       </div>
 
       <div className="pdf-frame-wrap">
@@ -364,9 +417,9 @@ export function DocumentPanel({
       <div className="page-excerpt">
         <div className="page-excerpt-title">
           <strong>{activeDoc?.name ?? "未选择报告"}</strong>
-          {activeDoc ? <span>p.{pageDetail?.page ?? "-"} / {activeDoc.page_count}</span> : null}
+          {activeDoc ? <span>p.{pageDetail?.page ?? "-"} / {activeDoc.page_count || "-"}</span> : null}
         </div>
-        <p>{pageDetail?.text || "滚动 PDF 查看内容，或点击引用跳转到指定页面。"}</p>
+        {!activeDoc?.parsed ? <p>PDF 已上传，但还没有 MinerU 解析结果。解析后即可读取页面并用于问答。</p> : <p>{pageDetail?.text || "滚动 PDF 查看内容，或点击引用跳转到指定页面。"}</p>}
       </div>
     </aside>
   );

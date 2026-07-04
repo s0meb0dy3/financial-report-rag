@@ -1,6 +1,9 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 
 import type { CitationResponse, ToolResultResponse, UsageResponse } from "../api/client";
 import { EChart } from "./EChart";
@@ -46,6 +49,7 @@ function CitationList({
 
 function normalizeMarkdown(content: string) {
   return content
+    .replace(/\$\$\s*([^\n]+?)\s*\$\$/g, (_, formula: string) => `\n\n$$\n${formula.trim()}\n$$\n\n`)
     .split("\n")
     .map((line) => {
       if (!line.includes("| |")) return line;
@@ -58,7 +62,11 @@ function normalizeMarkdown(content: string) {
 }
 
 function MarkdownContent({ content }: { content: string }) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdown(content)}</ReactMarkdown>;
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+      {normalizeMarkdown(content)}
+    </ReactMarkdown>
+  );
 }
 
 async function copyText(text: string) {
@@ -216,17 +224,100 @@ function ToolResults({ results }: { results: ToolResultResponse[] }) {
             {isChart ? (
               <EChart option={chartOption} />
             ) : (
-              <>
-                <span>{result.name}</span>
-                <strong>{result.status === "running" ? "运行中" : result.status === "error" ? "失败" : "完成"}</strong>
-                {result.error ? <em>{result.error}</em> : null}
-              </>
+              <ToolResultCard result={result} />
             )}
           </div>
         );
       })}
     </section>
   );
+}
+
+function ToolResultCard({ result }: { result: ToolResultResponse }) {
+  const [open, setOpen] = useState(false);
+  const title = toolTitle(result.name);
+  const summary = toolSummary(result);
+  const results = Array.isArray(result.content?.results) ? result.content.results : [];
+
+  return (
+    <>
+      <button className="tool-result-header" type="button" onClick={() => setOpen((v) => !v)}>
+        <span>{title}</span>
+        <strong>{result.status === "running" ? "运行中" : result.status === "error" ? "失败" : "完成"}</strong>
+        <Icon name="chevron" className={open ? "chevron open" : "chevron"} />
+      </button>
+      {summary ? <p className="tool-result-summary">{summary}</p> : null}
+      {result.error ? <em>{result.error}</em> : null}
+      {results.length ? (
+        <div className="tool-search-hits">
+          {results.slice(0, 3).map((item, index) => renderSearchHit(item, index))}
+        </div>
+      ) : null}
+      {open ? (
+        <pre className="tool-result-json">{JSON.stringify({ arguments: result.arguments, content: result.content }, null, 2)}</pre>
+      ) : null}
+    </>
+  );
+}
+
+function toolTitle(name: string) {
+  const titles: Record<string, string> = {
+    list_reports: "列出报告",
+    read_toc: "读取目录",
+    read_pdf_page: "读取页面",
+    search_report_text: "搜索报告",
+    tavily_search: "联网搜索",
+  };
+  return titles[name] ?? name;
+}
+
+function toolSummary(result: ToolResultResponse) {
+  const args = result.arguments ?? {};
+  if (result.name === "search_report_text") {
+    const count = Array.isArray(result.content?.results) ? result.content.results.length : 0;
+    return `关键词：${String(args.query ?? result.content?.query ?? "-")}，命中 ${count} 条`;
+  }
+  if (result.name === "read_pdf_page") {
+    return `文档：${String(args.doc_id ?? result.content?.doc_name ?? "-")}，页码：${String(args.page ?? result.content?.page ?? "-")}`;
+  }
+  if (result.name === "read_toc") return `文档：${String(args.doc_id ?? result.content?.doc_name ?? "-")}`;
+  if (result.name === "list_reports") {
+    const count = Array.isArray(result.content?.reports) ? result.content.reports.length : 0;
+    return `可用报告 ${count} 份`;
+  }
+  return Object.keys(args).length ? JSON.stringify(args) : "";
+}
+
+function renderSearchHit(item: unknown, index: number) {
+  if (!item || typeof item !== "object") return null;
+  const hit = item as Record<string, unknown>;
+  const docName = String(hit.doc_name ?? hit.doc_id ?? "报告");
+  const page = hit.page ? ` p.${String(hit.page)}` : "";
+  const snippet = String(hit.snippet ?? "");
+  const terms = Array.isArray(hit.matched_terms) ? hit.matched_terms.map(String) : [];
+  return (
+    <div className="tool-search-hit" key={`${docName}-${page}-${index}`}>
+      <b>{docName}{page}</b>
+      <span><HighlightedSnippet text={snippet} terms={terms} /></span>
+    </div>
+  );
+}
+
+function HighlightedSnippet({ text, terms }: { text: string; terms: string[] }) {
+  const usefulTerms = terms.filter(Boolean).sort((a, b) => b.length - a.length);
+  if (!usefulTerms.length || !text) return <>{text}</>;
+  const pattern = new RegExp(`(${usefulTerms.map(escapeRegExp).join("|")})`, "gi");
+  return (
+    <>
+      {text.split(pattern).map((part, index) =>
+        usefulTerms.some((term) => term.toLowerCase() === part.toLowerCase()) ? <mark key={index}>{part}</mark> : part,
+      )}
+    </>
+  );
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function UserMessage({ content }: { content: string }) {

@@ -142,6 +142,22 @@ export function listSessions() {
   return requestJson<SessionSummaryResponse[]>("/sessions");
 }
 
+export function renameSession(sessionId: string, title: string) {
+  return requestJson<SessionSummaryResponse>(`/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function deleteSession(sessionId: string) {
+  const response = await fetch(`${API_PREFIX}/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+}
+
 export function listDocuments() {
   return requestJson<DocumentResponse[]>("/documents");
 }
@@ -150,6 +166,23 @@ export function getDocumentPage(docId: string, page: number) {
   return requestJson<DocumentPageResponse>(
     `/documents/${encodeURIComponent(docId)}/pages/${page}`,
   );
+}
+
+export function uploadDocument(file: File) {
+  return requestJson<DocumentResponse>(`/documents?filename=${encodeURIComponent(file.name)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/pdf" },
+    body: file,
+  });
+}
+
+export async function deleteDocument(docId: string) {
+  const response = await fetch(`${API_PREFIX}/documents/${encodeURIComponent(docId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw await responseError(response);
+  }
 }
 
 export function documentPdfUrl(docId: string, page?: number | null) {
@@ -171,11 +204,13 @@ export function chat(payload: ChatRequest) {
 export async function streamChat(
   payload: ChatRequest,
   onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
 ) {
   const response = await fetch(`${API_PREFIX}/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   });
   if (!response.ok) {
     throw await responseError(response);

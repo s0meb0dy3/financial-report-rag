@@ -5,7 +5,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.chat_service import ChatService
@@ -75,6 +75,10 @@ class SessionMessageResponse(BaseModel):
 class SessionDetailResponse(BaseModel):
     session: SessionSummaryResponse
     messages: list[SessionMessageResponse] = Field(default_factory=list)
+
+
+class SessionRenameRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=80)
 
 
 class DocumentResponse(BaseModel):
@@ -251,6 +255,34 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return DocumentPageResponse(**parsed_page.to_dict())
 
+    @app.post("/documents", response_model=DocumentResponse)
+    async def upload_document(
+        request: Request,
+        filename: str,
+        service: DocumentService = Depends(get_document_service),
+    ) -> DocumentResponse:
+        content_type = request.headers.get("content-type", "")
+        if content_type and "application/pdf" not in content_type.lower():
+            raise HTTPException(status_code=415, detail="Only application/pdf uploads are supported")
+        try:
+            doc = service.save_upload(filename, await request.body())
+        except DocumentServiceError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return DocumentResponse(**doc.to_dict())
+
+    @app.delete("/documents/{doc_id}", status_code=204)
+    def delete_document(
+        doc_id: str,
+        service: DocumentService = Depends(get_document_service),
+    ) -> Response:
+        try:
+            removed = service.delete_document(doc_id)
+        except DocumentServiceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not removed:
+            raise HTTPException(status_code=403, detail="Document is outside managed storage")
+        return Response(status_code=204)
+
     @app.get("/sessions/{session_id}", response_model=SessionDetailResponse)
     def get_session(
         session_id: str,
@@ -263,6 +295,26 @@ def create_app(
             session=_session_summary_response(session),
             messages=_messages_from_turns(store.list_turns(session_id)),
         )
+
+    @app.patch("/sessions/{session_id}", response_model=SessionSummaryResponse)
+    def rename_session(
+        session_id: str,
+        payload: SessionRenameRequest,
+        store: SQLiteSessionStore = Depends(get_session_store),
+    ) -> SessionSummaryResponse:
+        session = store.get_session(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return _session_summary_response(store.update_session(session_id, title=payload.title))
+
+    @app.delete("/sessions/{session_id}", status_code=204)
+    def delete_session(
+        session_id: str,
+        store: SQLiteSessionStore = Depends(get_session_store),
+    ) -> Response:
+        if not store.delete_session(session_id):
+            raise HTTPException(status_code=404, detail="Session not found")
+        return Response(status_code=204)
 
     @app.post("/chat", response_model=ChatResponse)
     def chat(
