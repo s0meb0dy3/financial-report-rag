@@ -85,6 +85,7 @@ npm run dev
 - `GET /documents`：列出已解析的本地财报。
 - `POST /documents?filename=report.pdf`：上传 PDF；配置 MinerU 时自动精准解析。
 - `DELETE /documents/{doc_id}`：删除上传的 PDF 和解析产物。
+- `GET /documents/{doc_id}/toc`：读取 PDF 内置目录，返回可跳转的物理页码。
 - `GET /documents/{doc_id}/pdf`：预览原始 PDF。
 - `GET /documents/{doc_id}/pages/{page}`：读取指定 PDF 页文本。
 - `POST /chat`：非流式问答。

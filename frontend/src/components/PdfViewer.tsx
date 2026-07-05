@@ -4,8 +4,10 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 
 import {
   documentPdfUrl,
+  getDocumentToc,
   type DocumentPageResponse,
   type DocumentResponse,
+  type DocumentTocResponse,
 } from "../api/client";
 import { Icon } from "./Icon";
 
@@ -273,10 +275,33 @@ export function DocumentPanel({
   const uploadRef = useRef<HTMLInputElement | null>(null);
   const activeDoc = documents.find((doc) => doc.id === activeDocId) ?? documents[0] ?? null;
   const [pageInput, setPageInput] = useState("1");
+  const [toc, setToc] = useState<DocumentTocResponse | null>(null);
+  const [tocError, setTocError] = useState("");
 
   useEffect(() => {
     setPageInput(String(pageDetail?.page ?? 1));
   }, [pageDetail?.page, activeDoc?.id]);
+
+  useEffect(() => {
+    if (!activeDoc) {
+      setToc(null);
+      setTocError("");
+      return;
+    }
+    let cancelled = false;
+    setToc(null);
+    setTocError("");
+    getDocumentToc(activeDoc.id)
+      .then((payload) => {
+        if (!cancelled) setToc(payload);
+      })
+      .catch((error: Error) => {
+        if (!cancelled) setTocError(error.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDoc]);
 
   useEffect(() => {
     const handle = handleRef.current;
@@ -287,7 +312,7 @@ export function DocumentPanel({
 
     const onMouseMove = (e: MouseEvent) => {
       const delta = startX - e.clientX;
-      onResize(Math.min(900, Math.max(280, startWidth + delta)));
+      onResize(startWidth + delta);
     };
 
     const onMouseUp = () => {
@@ -337,20 +362,11 @@ export function DocumentPanel({
   return (
     <aside className="document-panel" aria-label="PDF 预览">
       <div className="resize-handle" ref={handleRef} />
-      <div className="document-panel-header">
-        <div>
-          <span>Source</span>
-          <h2>PDF 预览</h2>
-        </div>
-        <button type="button" onClick={onToggle} aria-label="收起 PDF 预览">
-          <Icon name="panel" />
-        </button>
-      </div>
-
       <div className="document-controls">
-        <label>
-          <span>报告</span>
+        <div className="document-picker-row">
+          <strong>PDF</strong>
           <select
+            aria-label="选择报告"
             value={activeDoc?.id ?? ""}
             onChange={(event) => onOpenPage(event.target.value, 1)}
           >
@@ -361,8 +377,6 @@ export function DocumentPanel({
               </option>
             ))}
           </select>
-        </label>
-        <div className="document-action-row">
           <input
             ref={uploadRef}
             type="file"
@@ -374,28 +388,56 @@ export function DocumentPanel({
               event.currentTarget.value = "";
             }}
           />
-          <button type="button" onClick={() => uploadRef.current?.click()}>
-            <Icon name="upload" /> 上传
+          <button type="button" className="document-icon-action" onClick={() => uploadRef.current?.click()} aria-label="上传 PDF" title="上传 PDF">
+            <Icon name="upload" />
           </button>
-          <button type="button" disabled={!activeDoc} onClick={() => activeDoc && onDeleteDocument(activeDoc.id)}>
-            <Icon name="trash" /> 删除
+          <button type="button" className="document-icon-action" disabled={!activeDoc} onClick={() => activeDoc && onDeleteDocument(activeDoc.id)} aria-label="删除 PDF" title="删除 PDF">
+            <Icon name="trash" />
+          </button>
+          <button type="button" className="document-icon-action" onClick={onToggle} aria-label="收起 PDF 预览" title="收起 PDF 预览">
+            <Icon name="panel" />
           </button>
         </div>
         <div className="page-jump-row">
-          <label>
-            <span>页码</span>
-            <input
-              value={pageInput}
-              inputMode="numeric"
-              onChange={(event) => setPageInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") jumpToPage();
-              }}
-            />
-          </label>
+          <span>p.</span>
+          <input
+            aria-label="页码"
+            value={pageInput}
+            inputMode="numeric"
+            onChange={(event) => setPageInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") jumpToPage();
+            }}
+          />
           <button type="button" disabled={!activeDoc} onClick={jumpToPage}>跳转</button>
           <button type="button" disabled={!activeDoc?.parsed} onClick={onAskCurrentPage}>问当前页</button>
         </div>
+      </div>
+
+      <div className="document-toc">
+        <div className="document-toc-title">
+          <strong>目录</strong>
+          {toc ? <span>{toc.entries.length} 项</span> : null}
+        </div>
+        {tocError ? <p>{tocError}</p> : null}
+        {toc && toc.entries.length === 0 ? <p>这个 PDF 没有内置目录。</p> : null}
+        {toc && toc.entries.length > 0 ? (
+          <div className="document-toc-list">
+            {toc.entries.map((entry, index) => (
+              <button
+                type="button"
+                className={entry.page === (pageDetail?.page ?? 0) ? "active" : ""}
+                key={`${entry.page}-${entry.title}-${index}`}
+                style={{ paddingLeft: `${8 + Math.min(Math.max(entry.level - 1, 0), 4) * 12}px` }}
+                onClick={() => activeDoc && onOpenPage(activeDoc.id, entry.page)}
+                title={entry.title}
+              >
+                <span>{entry.title}</span>
+                <em>{entry.page_label ?? entry.page}</em>
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div className="pdf-frame-wrap">
@@ -412,14 +454,6 @@ export function DocumentPanel({
             <p>没有找到可预览的 PDF</p>
           </div>
         )}
-      </div>
-
-      <div className="page-excerpt">
-        <div className="page-excerpt-title">
-          <strong>{activeDoc?.name ?? "未选择报告"}</strong>
-          {activeDoc ? <span>p.{pageDetail?.page ?? "-"} / {activeDoc.page_count || "-"}</span> : null}
-        </div>
-        {!activeDoc?.parsed ? <p>PDF 已上传，但还没有 MinerU 解析结果。解析后即可读取页面并用于问答。</p> : <p>{pageDetail?.text || "滚动 PDF 查看内容，或点击引用跳转到指定页面。"}</p>}
       </div>
     </aside>
   );

@@ -23,7 +23,7 @@ from app.tools.types import ChatTool
 SYSTEM_PROMPT = (
     "你是一个有帮助的财务分析助手。回答简洁、准确。"
     "如果需要读取本地财报原文页码，先用 list_reports 确认 doc_id，再用 read_toc 查看目录了解报告结构，"
-    "也可以用 search_report_text 搜索关键词定位相关页，再用 read_pdf_page 读取指定页。"
+    "也可以用 search_report_text 搜索关键词定位相关页，再用 read_pdf_page 读取指定页或最多 5 页的连续页码范围。"
     "read_toc 和 search_report_text 返回的是物理页码，可以直接传给 read_pdf_page。"
     "如果你需要当前外部信息，可以自由调用可用工具；如果没有调用工具，不要声称已经检索过外部来源。"
     "引用本地财报内容时尽量说明报告名和页码。"

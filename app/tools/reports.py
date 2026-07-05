@@ -83,11 +83,12 @@ class ReadTableOfContentsTool:
 
 
 class ReadPdfPageTool:
-    """Read one precise page from a MinerU parsed PDF."""
+    """Read one precise page or a short page range from a MinerU parsed PDF."""
 
     name = "read_pdf_page"
+    max_pages = 5
 
-    def __init__(self, document_service: DocumentService, *, default_max_chars: int = 12000):
+    def __init__(self, document_service: DocumentService, *, default_max_chars: int | None = None):
         self.document_service = document_service
         self.default_max_chars = default_max_chars
 
@@ -97,8 +98,8 @@ class ReadPdfPageTool:
             "function": {
                 "name": self.name,
                 "description": (
-                    "Read a specific page from a local financial report PDF using the MinerU parsed result. "
-                    "Use this when the user asks about a specific report page or asks you to verify source text."
+                    "Read one page or a short 1-5 page range from a local financial report PDF using the MinerU parsed result. "
+                    "Use this when the user asks about specific report pages or asks you to verify source text."
                 ),
                 "parameters": {
                     "type": "object",
@@ -112,11 +113,16 @@ class ReadPdfPageTool:
                             "minimum": 1,
                             "description": "1-based PDF page number.",
                         },
+                        "end_page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional inclusive end page. At most 5 pages can be read in one call.",
+                        },
                         "max_chars": {
                             "type": "integer",
                             "minimum": 1000,
                             "maximum": 20000,
-                            "description": "Maximum characters of page text to return.",
+                            "description": "Optional legacy per-page character cap.",
                         },
                     },
                     "required": ["doc_id", "page"],
@@ -132,29 +138,46 @@ class ReadPdfPageTool:
             raise ValueError("doc_id must not be blank")
         if page < 1:
             raise ValueError("page must be a positive integer")
+        end_page = _as_int(arguments.get("end_page"), default=page)
+        if end_page < page:
+            raise ValueError("end_page must be greater than or equal to page")
+        if end_page - page + 1 > self.max_pages:
+            raise ValueError("read_pdf_page can read at most 5 pages at a time")
 
+        max_chars = _optional_max_chars(arguments.get("max_chars"), self.default_max_chars)
+        pages = []
+        citations = []
         try:
-            parsed_page = self.document_service.read_page(doc_id, page)
+            for item_page in range(page, end_page + 1):
+                parsed_page = self.document_service.read_page(doc_id, item_page)
+                text = parsed_page.text[:max_chars] if max_chars else parsed_page.text
+                blocks = _trim_blocks(parsed_page.blocks, max_chars) if max_chars else parsed_page.blocks
+                truncated = max_chars is not None and len(parsed_page.text) > len(text)
+                pages.append({
+                    "page": parsed_page.page,
+                    "text": text,
+                    "truncated": truncated,
+                    "blocks": blocks,
+                })
+                citations.append({
+                    "doc_id": parsed_page.doc_id,
+                    "doc_name": parsed_page.doc_name,
+                    "page": parsed_page.page,
+                })
         except DocumentServiceError as exc:
             raise ValueError(str(exc)) from exc
 
-        max_chars = _as_int(arguments.get("max_chars"), default=self.default_max_chars)
-        max_chars = min(20000, max(1000, max_chars))
-        text = parsed_page.text[:max_chars]
-        truncated = len(parsed_page.text) > len(text)
-        citation = {
-            "doc_id": parsed_page.doc_id,
-            "doc_name": parsed_page.doc_name,
-            "page": parsed_page.page,
-        }
+        first = pages[0]
         return {
-            "doc_id": parsed_page.doc_id,
-            "doc_name": parsed_page.doc_name,
-            "page": parsed_page.page,
-            "text": text,
-            "truncated": truncated,
-            "blocks": _trim_blocks(parsed_page.blocks, max_chars),
-            "citations": [citation],
+            "doc_id": citations[0]["doc_id"],
+            "doc_name": citations[0]["doc_name"],
+            "page": page,
+            "end_page": end_page,
+            "text": first["text"] if page == end_page else "\n\n".join(f"[p.{item['page']}]\n{item['text']}" for item in pages),
+            "truncated": any(bool(item["truncated"]) for item in pages),
+            "blocks": first["blocks"] if page == end_page else [],
+            "pages": pages,
+            "citations": citations,
         }
 
 
@@ -269,6 +292,12 @@ def _as_int(value: Any, *, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_max_chars(value: Any, default: int | None) -> int | None:
+    if value is None:
+        return default
+    return min(20000, max(1000, _as_int(value, default=default or 12000)))
 
 
 def _query_terms(query: str) -> list[str]:

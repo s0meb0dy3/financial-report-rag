@@ -95,6 +95,21 @@ class DocumentPageBlockResponse(BaseModel):
     bbox: list[float | int] | None = None
 
 
+class DocumentTocEntryResponse(BaseModel):
+    level: int
+    title: str
+    page: int
+    page_label: str | None = None
+
+
+class DocumentTocResponse(BaseModel):
+    doc_id: str
+    doc_name: str
+    page_count: int
+    summary: str
+    entries: list[DocumentTocEntryResponse] = Field(default_factory=list)
+
+
 class DocumentPageResponse(BaseModel):
     doc_id: str
     doc_name: str
@@ -246,6 +261,16 @@ def create_app(
         service: DocumentService = Depends(get_document_service),
     ) -> list[DocumentResponse]:
         return [DocumentResponse(**doc.to_dict()) for doc in service.list_documents()]
+
+    @app.get("/documents/{doc_id}/toc", response_model=DocumentTocResponse)
+    def get_document_toc(
+        doc_id: str,
+        service: DocumentService = Depends(get_document_service),
+    ) -> DocumentTocResponse:
+        try:
+            return DocumentTocResponse(**service.get_toc(doc_id))
+        except DocumentServiceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/documents/{doc_id}/pdf")
     def get_document_pdf(

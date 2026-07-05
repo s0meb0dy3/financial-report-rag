@@ -27,6 +27,19 @@ def make_pdf_bytes(text: str = "") -> bytes:
         pdf.close()
 
 
+def make_pdf_with_toc() -> bytes:
+    import pymupdf
+
+    pdf = pymupdf.open()
+    try:
+        pdf.new_page().insert_text((72, 72), "封面")
+        pdf.new_page().insert_text((72, 72), "经营情况")
+        pdf.set_toc([[1, "封面", 1], [1, "经营情况", 2]])
+        return pdf.tobytes()
+    finally:
+        pdf.close()
+
+
 def make_response(content: str) -> MagicMock:
     response = MagicMock()
     response.choices = [MagicMock(message=MagicMock(content=content))]
@@ -60,11 +73,11 @@ def write_json(path: Path, payload) -> None:
 def build_document_service(root: Path) -> DocumentService:
     pdf = root / "raw" / "report.pdf"
     pdf.parent.mkdir(parents=True, exist_ok=True)
-    pdf.write_bytes(b"%PDF-1.4")
+    pdf.write_bytes(make_pdf_with_toc())
     artifact = root / "mineru" / "doc-a"
     write_json(
         artifact / "manifest.json",
-        {"doc_id": "doc-a", "file_name": "report.pdf", "source_path": str(pdf)},
+        {"doc_id": "doc-a", "file_name": "report.pdf", "source_path": str(pdf), "page_count": 2},
     )
     write_json(
         artifact / "content_list_v2.json",
@@ -74,7 +87,13 @@ def build_document_service(root: Path) -> DocumentService:
                     "type": "paragraph",
                     "content": {"paragraph_content": [{"type": "text", "content": "第一页内容"}]},
                 }
-            ]
+            ],
+            [
+                {
+                    "type": "paragraph",
+                    "content": {"paragraph_content": [{"type": "text", "content": "第二页内容"}]},
+                }
+            ],
         ],
     )
     return DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
@@ -211,6 +230,7 @@ class ApiTests(unittest.TestCase):
                 docs = client.get("/documents")
                 page = client.get("/documents/doc-a/pages/1")
                 pdf = client.get("/documents/doc-a/pdf")
+                toc = client.get("/documents/doc-a/toc")
 
         self.assertEqual(docs.status_code, 200)
         self.assertEqual(docs.json()[0]["id"], "doc-a")
@@ -218,6 +238,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(page.json()["text"], "第一页内容")
         self.assertEqual(pdf.status_code, 200)
         self.assertIn("application/pdf", pdf.headers["content-type"])
+        self.assertEqual(toc.status_code, 200)
+        self.assertEqual(toc.json()["entries"][1]["title"], "经营情况")
+        self.assertEqual(toc.json()["entries"][1]["page"], 2)
 
     def test_session_rename_and_delete_endpoints(self) -> None:
         with TemporaryDirectory() as directory:

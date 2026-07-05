@@ -146,6 +146,42 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertTrue(page["truncated"])
         self.assertLessEqual(sum(len(block["text"]) for block in page["blocks"]), 1000)
 
+    def test_read_page_can_read_short_page_range(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "raw" / "report.pdf"
+            pdf.parent.mkdir(parents=True)
+            pdf.write_bytes(b"%PDF-1.4")
+            artifact = root / "mineru" / "doc-a"
+            write_json(
+                artifact / "manifest.json",
+                {"doc_id": "doc-a", "file_name": "report.pdf", "source_path": str(pdf), "page_count": 3},
+            )
+            write_json(
+                artifact / "content_list_v2.json",
+                [
+                    [{"type": "paragraph", "content": {"paragraph_content": "第一页"}}],
+                    [{"type": "paragraph", "content": {"paragraph_content": "第二页"}}],
+                    [{"type": "paragraph", "content": {"paragraph_content": "第三页"}}],
+                ],
+            )
+            service = DocumentService(raw_dir=root / "raw", mineru_dir=root / "mineru")
+
+            result = ReadPdfPageTool(service).run({"doc_id": "doc-a", "page": 2, "end_page": 3})
+
+        self.assertEqual(result["page"], 2)
+        self.assertEqual(result["end_page"], 3)
+        self.assertEqual([item["page"] for item in result["pages"]], [2, 3])
+        self.assertIn("[p.2]\n第二页", result["text"])
+        self.assertEqual([item["page"] for item in result["citations"]], [2, 3])
+
+    def test_read_page_rejects_range_over_five_pages(self) -> None:
+        with TemporaryDirectory() as directory:
+            service = build_search_document_service(Path(directory))
+
+            with self.assertRaisesRegex(ValueError, "at most 5 pages"):
+                ReadPdfPageTool(service).run({"doc_id": "doc-a", "page": 1, "end_page": 6})
+
     def test_search_report_text_finds_page_with_citation(self) -> None:
         with TemporaryDirectory() as directory:
             service = build_search_document_service(Path(directory))

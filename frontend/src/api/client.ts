@@ -85,6 +85,19 @@ export type DocumentPageResponse = {
   }>;
 };
 
+export type DocumentTocResponse = {
+  doc_id: string;
+  doc_name: string;
+  page_count: number;
+  summary: string;
+  entries: Array<{
+    level: number;
+    title: string;
+    page: number;
+    page_label: string | null;
+  }>;
+};
+
 export type RuntimeConfigResponse = {
   status: string;
   chat_model: string;
@@ -178,6 +191,10 @@ export function getDocumentPage(docId: string, page: number) {
   return requestJson<DocumentPageResponse>(
     `/documents/${encodeURIComponent(docId)}/pages/${page}`,
   );
+}
+
+export function getDocumentToc(docId: string) {
+  return requestJson<DocumentTocResponse>(`/documents/${encodeURIComponent(docId)}/toc`);
 }
 
 export function uploadDocument(file: File) {

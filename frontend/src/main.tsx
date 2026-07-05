@@ -390,6 +390,12 @@ function App() {
       .catch((error: Error) => setStatus(`文档删除失败：${error.message}`));
   }, [documents]);
 
+  const handleDocumentPanelResize = useCallback((width: number) => {
+    const sidebarWidth = sidebarCollapsed ? 76 : 320;
+    const maxWidth = Math.max(320, window.innerWidth - sidebarWidth - 360);
+    setDocumentPanelWidth(Math.min(maxWidth, Math.max(320, width)));
+  }, [sidebarCollapsed]);
+
   const askCurrentPage = useCallback(() => {
     const doc = documents.find((item) => item.id === activeDocumentId);
     if (!doc || !doc.parsed || isSending) return;
@@ -500,7 +506,7 @@ function App() {
         onUploadDocument={handleUploadDocument}
         onDeleteDocument={handleDeleteDocument}
         onAskCurrentPage={askCurrentPage}
-        onResize={setDocumentPanelWidth}
+        onResize={handleDocumentPanelResize}
         onResizeStart={() => setIsResizing(true)}
         onResizeEnd={() => setIsResizing(false)}
       />
